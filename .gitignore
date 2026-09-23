@@ -56,3 +56,6 @@ out/
 # Editor backups
 *.swp
 *.swo
+
+# Environment specific
+.env
