@@ -1,0 +1,18 @@
+[package]
+name = "scatterbase"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = "0.8.5"
+dotenv = "0.15.0"
+ed25519-dalek = "2.0.0"
+rand_core = "0.6.4"
+base64 = "0.21.0"
+sha2 = "0.10.7"
+data-encoding = "2.4.0"
+chrono = "0.4.26"
+rio_api = { git = "https://github.com/oxigraph/rio", branch = "main" }
+rio_turtle = { git = "https://github.com/oxigraph/rio", branch = "main", features = ["generalized"] }
+lazy_static = "1.4.0"
+tempfile = "3.8.0"
