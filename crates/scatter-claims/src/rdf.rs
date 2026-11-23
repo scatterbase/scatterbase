@@ -22,8 +22,9 @@
 //! A signed claim adds what the server assigned:
 //!
 //! ```text
-//! scatter_claim:{C} scatter:seqID "{sequence ID}" .
+//! scatter_claim:{C} rdf:type scatter:SignedClaim .
 //! scatter_claim:{C} prov:generatedAtTime "{timestamp}"^^xsd:dateTime .
+//! scatter_claim:{C} scatter:seqID "{sequence ID}" .
 //! scatter_claim:{C} scatter:serverSignature "ed25519:{signature}" .
 //! ```
 //!
@@ -149,6 +150,9 @@ impl SignedClaim {
         let graph = Graph(triples);
         let claim_iri = envelope.id().iri();
 
+        if !graph.objects(&claim_iri, rdf::TYPE).any(|class| *class == Term::from(scatter::SIGNED_CLAIM)) {
+            return Err(ClaimError::Malformed(format!("{claim_iri} is not a scatter:SignedClaim")));
+        }
         let sequence_id = graph.literal(&claim_iri, scatter::SEQ_ID)?;
         let timestamp = graph.literal(&claim_iri, prov::GENERATED_AT_TIME)?;
         let server_signature: Signature = graph.literal(&claim_iri, scatter::SERVER_SIGNATURE)?.parse()?;
@@ -159,6 +163,7 @@ impl SignedClaim {
         let claim_iri = self.id().iri();
         let mut groups = self.envelope().groups();
         groups.push(vec![
+            Triple::new(claim_iri.clone(), rdf::TYPE, scatter::SIGNED_CLAIM),
             Triple::new(
                 claim_iri.clone(),
                 prov::GENERATED_AT_TIME,
@@ -360,6 +365,14 @@ mod tests {
         assert_eq!(read, signed);
         assert_eq!(read.verify(&key(9).verifying_key()), Ok(()));
         assert_eq!(Envelope::from_triples(&triples).unwrap(), *signed.envelope());
+
+        // Only a claim typed scatter:SignedClaim reads back as one
+        let untyped: Vec<Triple> = triples.iter()
+            .filter(|t| t.object != Term::from(scatter::SIGNED_CLAIM))
+            .cloned()
+            .collect();
+        assert_eq!(untyped.len(), triples.len() - 1);
+        assert!(matches!(SignedClaim::from_triples(&untyped), Err(ClaimError::Malformed(_))));
         assert!(SignedClaim::from_triples(&signed.envelope().to_triples()).is_err());
     }
 
@@ -428,7 +441,8 @@ mod tests {
         assert!(text.contains(&format!("<https://scatter.red/ack/{id}/term/")));
 
         let n = lines.len();
-        assert_eq!(lines[n - 4], format!("scatter_claim:{id} scatter:userSignature \"{}\" .", signed.envelope().signature()));
+        assert_eq!(lines[n - 5], format!("scatter_claim:{id} scatter:userSignature \"{}\" .", signed.envelope().signature()));
+        assert_eq!(lines[n - 4], format!("scatter_claim:{id} rdf:type scatter:SignedClaim ."));
         assert_eq!(lines[n - 3], format!("scatter_claim:{id} prov:generatedAtTime \"2026-11-23T00:00:00.000Z\"^^<http://www.w3.org/2001/XMLSchema#dateTime> ."));
         assert_eq!(lines[n - 2], format!("scatter_claim:{id} scatter:seqID \"2026112300000000000\" ."));
         assert_eq!(lines[n - 1], format!("scatter_claim:{id} scatter:serverSignature \"{}\" .", signed.server_signature()));

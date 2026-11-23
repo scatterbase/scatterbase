@@ -129,6 +129,7 @@ scatter_claim:{C} scatter:userSignature "ed25519:{signature}" .
 A signed claim adds:
 
 ```turtle
+scatter_claim:{C} rdf:type scatter:SignedClaim .
 scatter_claim:{C} prov:generatedAtTime "{timestamp}"^^xsd:dateTime .
 scatter_claim:{C} scatter:seqID "{sequence ID}" .
 scatter_claim:{C} scatter:serverSignature "ed25519:{signature}" .
@@ -182,6 +183,7 @@ These terms are defined in the `scatter-vocab` crate, which is where the code ta
 | IRI | Type | Description |
 |---|---|---|
 | `scatter:ClaimTriple` | Class | A triple as claimed |
+| `scatter:SignedClaim` | Class | A claim the server accepted: sequenced, timestamped and signed by it |
 | `scatter:PublicKey` | Class | A registered public key |
 | `scatter:SandboxDomain` | Class | The `.sandbox` domain an instance is given when none is configured |
 | `scatter:claimedIn` | Predicate | From a claimed triple to its claim |
@@ -202,5 +204,6 @@ These terms are defined in the `scatter-vocab` crate, which is where the code ta
 | IRI | Description |
 |---|---|
 | `rdf:type`, `rdf:Statement`, `rdf:subject`, `rdf:predicate`, `rdf:object` | RDF reification of each claimed triple |
+| `rdf:type` | Also the class of an accepted claim, a public key and a domain |
 | `prov:wasAttributedTo` | From a claim to its actor |
 | `prov:generatedAtTime` | When the server accepted the claim |
