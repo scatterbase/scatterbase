@@ -1,121 +1,221 @@
 # Claim Envelopes
 
-A **claim envelope** is the fundamental unit of provenance in Scatterbase. When a user writes triples, they are not stored as bare data — they are wrapped in a claim envelope that records *who* made the assertion, *when* it was recorded, and *what* was known at the time. This document explains the structure of a claim envelope and all the URIs involved.
+A **claim** is the unit of provenance in Scatterbase. Triples are not stored as bare data: they are claimed by an actor, and the claim records *who* asserts them, *what that actor had seen* when asserting them, and *when* a server accepted them. This document specifies the claim, its identifier, its signatures and its RDF form. The implementation is the `scatter-claims` crate; each preimage below is produced by exactly one function there.
 
 ## Overview
 
 A claim goes through two phases:
 
-1. **ClaimEnvelope** (client-side) — the user prepares a set of triples, signs them, and submits the envelope.
-2. **SignedClaim** (server-side) — the server adds a timestamp, a sequence ID, and its own signature, then stores the result.
+1. **Envelope** (client side). The actor prepares a claim of a set of triples, acknowledges the prior use of each term, and signs. `scatterbase claim prepare` writes an envelope.
+2. **Signed claim** (server side). The server verifies the actor's signature against the actor's registered key, assigns a sequence ID and a timestamp, signs, and appends the result to the claim partition of the log. `scatterbase claim submit` does this; `scatterbase claim write` does both phases in one step and stores exactly the same triples.
 
-The final stored claim contains the original triples, RDF reification metadata, prior-use acknowledgments, and two signatures (user + server).
+## Hashes
 
-## Anatomy of a Claim Envelope
+Every hash is SHA-256. In text and in IRIs a hash is written in **z-base-32**: 52 characters, no padding.
 
-A claim envelope contains the following groups of triples:
+| Hash | Preimage | Used as |
+|---|---|---|
+| **Triple hash** | The triple's N-Triples line, `<s> <p> o .`, with one space between terms and before the dot and no line ending | `https://scatter.red/triple/{hash}` |
+| **Term hash** | The term's N-Triples form, `<iri>`, with the angle brackets | The last segment of an acknowledgment IRI |
+| **Claim ID** | The claim preimage, below | `https://scatter.red/claim/{hash}` |
 
-### 1. Original Triples
+The claim ID of "no claim" is 32 zero bytes, `yyyy…y` (52 `y`). It stands for the claim before an actor's first claim and for the prior use of a term nobody has used.
 
-The user-submitted data triples, stored verbatim. For example:
+## The claim
+
+A claim is:
+
+- its **triples**: a set, holding IRIs and literals only;
+- its **attribution**: the IRI of the actor making the claim;
+- its **previous claim**: the ID of the claim that actor made before this one, which makes each actor's claims a chain.
+
+### Claim ID
+
+The claim ID is the SHA-256 of this text, each line ending with a line feed:
+
+```text
+scatter-claim-v0
+{attribution IRI}
+{previous claim ID}
+{triple hash}          one line per triple, in ascending order of the z-base-32 text
+```
+
+Nothing the server assigns is part of the claim ID, so the ID is known before the claim is submitted.
+
+### Blank nodes and quoted triples
+
+A claim holds neither, so when triples are read from a file:
+
+- **A blank node** becomes the skolem IRI `{domain}/.well-known/genid/{claim}/{label}`. `{claim}` is the claim's *provisional ID*: the ID the claim has with `current` in place of `{claim}`. The claim's own ID is computed over the final IRIs.
+- **A blank node written without a label** (`[ … ]`, a collection) is first labelled `anon1`, `anon2`, … in order of first appearance, skipping any label the input itself uses.
+- **A quoted triple** becomes its triple hash IRI, the IRI the envelope gives that triple when it is claimed. `<< s p o >> q v` is claimed as `<https://scatter.red/triple/{hash}> q v`.
+
+## Prior-use acknowledgments
+
+For every IRI the claim uses in subject or object position, the envelope records which claim last used that term as far as the client knew, or "no claim". Every claim acknowledges every term it uses, so the claims that used a term are the claims with an acknowledgment of it.
+
+A server accepts an envelope only if it is current: its previous claim is the actor's latest claim in the store, and each acknowledgment names the claim that last used its term. An envelope prepared before another claim was accepted is refused, and is prepared again against the store as it then is. So no claim is accepted without its actor having seen every earlier claim about the same terms.
+
+## Signatures
+
+Both signatures are Ed25519, written `ed25519:` followed by the 64 bytes in z-base-32.
+
+**The actor** signs this text, each line ending with a line feed:
+
+```text
+scatter-claim-signature-v0
+{claim ID}
+<{term IRI}> {prior claim ID}      one line per acknowledged term, in ascending order of the IRI
+```
+
+The claim ID commits to the triples, the attribution and the previous claim, so the signature covers those and the acknowledgments. It does not depend on how the envelope is written as RDF.
+
+**The server** signs this text when it accepts the envelope:
+
+```text
+scatter-claim-acceptance-v0
+{claim ID}
+{actor's signature, as ed25519:…}
+{sequence ID}
+{timestamp}
+```
+
+The sequence ID is the claim's offset in the claim partition of the log, written in decimal: the first claim an instance accepts has sequence ID `0`, and there are no gaps. The timestamp is the acceptance time in RFC 3339 with milliseconds, in UTC.
+
+## Keys
+
+A public key is named by `urn:ed25519:{key}`, the 32 bytes in z-base-32. Its **key ID** is the SHA-256 of the public key in z-base-32.
+
+**The server's key** is the key of the founding record of the log's server partition, and a claim by the server is checked against it.
+
+**An actor's keys** are registered by the server in the log's mutable partition, as `scatter-actors` key records (below). An actor may have several keys at once. A claim by an actor is accepted if its signature verifies against any key of the actor's that is registered, not revoked and valid at the time; a claim by an actor with no such key is refused. `scatterbase key add` registers a key and `scatterbase key revoke` revokes an actor's keys. A revoked key signs no more, and the claims it signed stay in the log and stay verifiable, since each claim record keeps the public key it was checked against.
+
+Nothing anyone claims registers a key. The keys actors have now are also written to the store, in the `mutable` graph, as:
 
 ```turtle
+<{actor}> scatter:hasPublicKey <urn:ed25519:{key}> .
+<urn:ed25519:{key}> rdf:type scatter:PublicKey .
+<urn:ed25519:{key}> scatter:keyType scatter:ed25519 .
+<urn:ed25519:{key}> scatter:owner <{actor}> .
+```
+
+That graph is derived from the key records, and a revoked key leaves it. The same triples claimed by an actor, or by the server, are in the `claim` or `server` graph and are only what was claimed.
+
+Each actor has its own key. The server's private key is in the file the configuration names; `key add` writes an actor's new key to `actors/{hash}.ed25519.private` beside it, where `{hash}` is the SHA-256 of the actor's IRI in z-base-32.
+
+## RDF form
+
+An envelope with claim ID `C` is these triples. `T` is a triple hash and `H` a term hash.
+
+```turtle
+# The claim's triples, as claimed
 <http://example.org/resource/1> <http://schema.org/name> "Test Resource" .
-<http://example.org/resource/1> rdf:type <http://schema.org/Thing> .
+
+# For each triple: its reification and its claim
+scatter_triple:{T} rdf:type rdf:Statement .
+scatter_triple:{T} rdf:type scatter:ClaimTriple .
+scatter_triple:{T} rdf:subject <http://example.org/resource/1> .
+scatter_triple:{T} rdf:predicate <http://schema.org/name> .
+scatter_triple:{T} rdf:object "Test Resource" .
+scatter_triple:{T} scatter:claimedIn scatter_claim:{C} .
+
+# Attribution and chain
+scatter_claim:{C} prov:wasAttributedTo <{actor}> .
+scatter_claim:{C} scatter:previousClaim scatter_claim:{previous} .
+
+# For each term: its acknowledgment
+<https://scatter.red/ack/{C}/term/{H}> scatter:term <{term}> .
+<https://scatter.red/ack/{C}/term/{H}> scatter:priorClaim scatter_claim:{prior} .
+scatter_claim:{C} scatter:acknowledgesPriorUse <https://scatter.red/ack/{C}/term/{H}> .
+
+# The actor's signature
+scatter_claim:{C} scatter:userSignature "ed25519:{signature}" .
 ```
 
-### 2. Reified Triple Metadata
-
-Each original triple is hashed to produce a **triple hash URI**. The hash is computed from the triple's canonical N-Triples representation. For each triple, the envelope records:
-
-- Its type as both `rdf:Statement` and `scatter:ClaimTriple`
-- RDF reification triples (`rdf:subject`, `rdf:predicate`, `rdf:object`)
-- A link back to the claim via `scatter:claimedIn`
+A signed claim adds:
 
 ```turtle
-scatter_triple:{tripleHash} rdf:type rdf:Statement .
-scatter_triple:{tripleHash} rdf:type scatter:ClaimTriple .
-scatter_triple:{tripleHash} rdf:subject <http://example.org/resource/1> .
-scatter_triple:{tripleHash} rdf:predicate <http://schema.org/name> .
-scatter_triple:{tripleHash} rdf:object "Test Resource" .
-scatter_triple:{tripleHash} scatter:claimedIn scatter_claim:{claimHash} .
+scatter_claim:{C} rdf:type scatter:SignedClaim .
+scatter_claim:{C} prov:generatedAtTime "{timestamp}"^^xsd:dateTime .
+scatter_claim:{C} scatter:seqID "{sequence ID}" .
+scatter_claim:{C} scatter:serverSignature "ed25519:{signature}" .
 ```
 
-### 3. Claim Attribution
+In Turtle the envelope is written one triple per line: the claim's triples in order, then the triples about them in order, then the actor's signature, then the server's triples with the server's signature last.
 
-The claim is attributed to the server identity that submitted it, using the PROV ontology:
+**Reading an envelope back.** Only the triples about the claim are needed, which in the store are the `meta` graph. The claim's triples are taken from the reification of every `scatter_triple:{T}` claimed in `C`, each checked against its triple hash; the claim ID is then recomputed and must equal `C`. A set of triples that reads back is therefore the envelope that was written, and the signatures can be checked against it.
 
-```turtle
-scatter_claim:{claimHash} prov:wasAttributedTo <{serverURI}> .
+## The log
+
+Everything an instance accepts is kept in an append-only log, which is its source of truth. The log is a `scatter-log` file store with three partitions. Each keeps every record, and after each append the server signs a checkpoint of the partition's Merkle tree head, under the origin `{host}/log/{name}`, so a copy of the log can be shown to be complete and in order. `scatterbase log verify` checks the key chain, the checkpoints, every record and every signature.
+
+### The server partition
+
+Partition 0 founds and describes the instance. It holds `scatter:v0/config` records, as a `config` partition does in Triplespace, and `scatterbase init` writes the first of them:
+
+| Offset | Key | Content |
+|---|---|---|
+| 0 | `key:{key ID}` | The server's public key. This is the instance's **founding record**: it is signed by the key it registers, and everything else in the log is checked against that key. |
+| 1 | `graph:server` | The server partition itself: partition 0 and its policies |
+| 2 | `graph:claim` | The claim partition: its ID, 64 random bits, and its policies |
+| 3 | `graph:mutable` | The mutable partition: its ID and its policies |
+| 4 | `graph:meta` | The `meta` graph, a projection |
+
+The `graph:` records are the instance's **graph registry**. Each is attested by the server under the founding record's authority. The claim partition is the one the `graph:claim` record names. The `key:` records form a chain, in which a later key must be signed by the one before it, and the server's key is the last of the chain.
+
+### The mutable partition
+
+The mutable partition holds what can be taken back: who the actors are and the keys they sign with. Its records are attested by the server under the founding record's authority, so only the server writes them.
+
+**Actors and surrogates.** A record's header is never erased, so it must not say who an actor is. An actor is therefore known in this partition by a **surrogate**: a number the server mints in sequence, from 1, the first time the actor is given a record, written `actor:{n}`. The one place that says which actor a surrogate stands for is its actor record, of payload type `scatter:v0/actor` and keyed `actor:{n}`, whose content is a `scatter-actors` actor record of kind `federated` holding the actor's IRI:
+
+```text
+{"kind": "federated", "status": "active", "raw": "{actor IRI}"}
 ```
 
-### 4. Claim Chain Link
+If that record's content is erased, only the number is left. The key records under the surrogate can no longer be tied to an IRI and count for nobody, and the IRI seen again is given a new surrogate.
 
-Each claim links to the previous claim in the signer's chain, forming an append-only log:
+**Keys.** A key is registered by a record of payload type `scatter:v0/key`, whose header key is the actor's surrogate and whose content is a `scatter-actors` key record:
 
-```turtle
-scatter_claim:{claimHash} scatter:previousClaim scatter_claim:{previousClaimHash} .
+```text
+{"key_id": text, "alg": "ed25519", "public_key": bytes(32), "valid_from": microseconds since the epoch}
 ```
 
-For the very first claim, the previous claim hash is a placeholder value (`yyyy...y`).
+with `valid_until` if the key expires. A later record for the same key ID with `"revoked": true` revokes it.
 
-### 5. Prior-Use Acknowledgments
+### The claim partition
 
-Every URI term (subject or object) used in the claim gets an **acknowledgment triple** that records which prior claim last used that term. This creates a cross-referencing web of provenance. Each acknowledgment has three parts:
+A claim is one record of payload type `scatter:v0/claim`. Its header key is the claim ID in z-base-32, its `appended_at` is the acceptance time, and its offset is the claim's sequence ID. Its body has five parts, each salted and erasable on its own:
 
-```turtle
-# The acknowledgment node records which term it refers to
-<https://scatter.red/ack/{claimHash}/term/{termHash}> scatter:term <{termURI}> .
+| # | Part | CBOR |
+|---|---|---|
+| 0 | The claim | `{"previous": bytes(32), "triples": [text, …]}`, each triple its N-Triples line, in the claim's order |
+| 1 | The attribution | text, the actor's IRI |
+| 2 | The client signature | `{"alg": "ed25519", "key": bytes(32), "sig": bytes(64)}`, `key` being the public key the signature verified against |
+| 3 | The server signature | `{"alg": "ed25519", "key": bytes(32), "sig": bytes(64), "sequence": text, "timestamp": text}` |
+| 4 | The acknowledgments | `[[text, bytes(32)], …]`: term IRI and prior claim ID, in order of the IRI |
 
-# It records the prior claim where this term was last seen
-<https://scatter.red/ack/{claimHash}/term/{termHash}> scatter:priorClaim scatter_claim:{priorClaimHash} .
+## The store and its graphs
 
-# The claim declares that it acknowledges this prior use
-scatter_claim:{claimHash} scatter:acknowledgesPriorUse <https://scatter.red/ack/{claimHash}/term/{termHash}> .
-```
+The storage file is derived from the log: it is a `scatter-quadstore` N-Quads file holding the RDF form of every claim, below, and `scatterbase log rebuild` writes it again from the log. The instance's named graphs have IRIs `{domain}/graph/{name}`, and a claim is written into two of them:
 
-The `{termHash}` is computed by hashing the canonical string representation of the term URI.
+| Graph | Holds |
+|---|---|
+| `claim` | The triples of every claim by an actor other than the server |
+| `server` | The triples of every claim by the server, such as the declaration of the domain. (The records of the server *partition* are configuration and are not projected into it.) |
+| `meta` | Everything recorded about each claim: its reification, attribution, chain, acknowledgments, signatures, sequence ID, time and type |
+| `mutable` | The registration of each key an actor has now, derived from the key records of the mutable partition |
+| the default graph | Triples written outside any claim, by `scatterbase triple write` and `scatterbase domain init` |
 
-### 6. User Signature
+Only what the log holds is written to the named graphs. The server's lookups read `meta` alone, for the latest claim using a term, an actor's latest claim and a claim's sequence ID, and keys are read from the log itself, never from the store.
 
-The user signs the claim data with their Ed25519 private key:
+So nothing an actor claims is taken for a registered key or for what the server recorded about a claim, whatever its triples say. A claim that says `<alice> scatter:hasPublicKey <urn:ed25519:…>` or `scatter_claim:{C} scatter:seqID "999999"` is stored, in `claim`, as what its actor asserted and nothing more. The `meta` graph alone is enough to read every claim back, since it holds each claimed triple's reification.
 
-```turtle
-scatter_claim:{claimHash} scatter:userSignature "ed25519:{signatureInBase32z}" .
-```
+## IRI reference
 
-### 7. Server-Added Triples (SignedClaim)
+### Namespace prefixes
 
-When the server accepts and stores the claim, it adds:
-
-```turtle
-# A unique sequence ID
-scatter_claim:{claimHash} scatter:seqID "{sequenceId}"^^xsd:string .
-
-# The timestamp of acceptance
-scatter_claim:{claimHash} prov:generatedAtTime "{ISO8601timestamp}"^^xsd:dateTime .
-
-# The server's own signature over the user signature and sequence ID
-scatter_claim:{claimHash} scatter:serverSignature "ed25519:{serverSignatureInBase32z}" .
-```
-
-## Claim Hash Computation
-
-The claim hash is a deterministic hash computed from:
-
-1. The sorted triple hashes (each triple's N-Triples form, hashed individually)
-2. The attribution URI
-3. The previous claim hash
-4. The timestamp
-5. The sequence ID
-
-These are concatenated and hashed together to produce the claim's unique identifier.
-
-## URI Reference
-
-### Namespace Prefixes
-
-| Prefix | Namespace URI |
+| Prefix | Namespace IRI |
 |---|---|
 | `rdf` | `http://www.w3.org/1999/02/22-rdf-syntax-ns#` |
 | `prov` | `http://www.w3.org/ns/prov#` |
@@ -123,43 +223,43 @@ These are concatenated and hashed together to produce the claim's unique identif
 | `scatter_claim` | `https://scatter.red/claim/` |
 | `scatter_triple` | `https://scatter.red/triple/` |
 
-### Scatterbase Identity URIs
+### Identity IRIs
 
-| URI Pattern | Description |
+| IRI pattern | Identifies |
 |---|---|
-| `https://scatter.red/claim/{hash}` | Identifies a specific claim by its hash |
-| `https://scatter.red/triple/{hash}` | Identifies a specific reified triple by its hash |
-| `https://scatter.red/ack/{claimHash}/term/{termHash}` | An acknowledgment node linking a term to its prior claim |
-| `urn:ed25519:{publicKeyInBase32z}` | Identifies a public key |
+| `https://scatter.red/claim/{hash}` | A claim, by its claim ID |
+| `https://scatter.red/triple/{hash}` | A triple, by its triple hash |
+| `https://scatter.red/ack/{claim ID}/term/{term hash}` | A claim's acknowledgment of one term |
+| `urn:ed25519:{key}` | A public key |
 
-### Scatterbase Vocabulary (`https://scatter.red/terms/v0/`)
+### Scatterbase vocabulary (`https://scatter.red/terms/v0/`)
 
-| URI | Type | Description |
+These terms are defined in the `scatter-vocab` crate, which is where the code takes them from.
+
+| IRI | Type | Description |
 |---|---|---|
-| `scatter:ClaimTriple` | Class | Type for reified triples within a claim |
-| `scatter:SignedClaim` | Class | Type for a server-signed claim |
-| `scatter:PublicKey` | Class | Type for a registered public key |
-| `scatter:claimedIn` | Predicate | Links a reified triple to its claim |
-| `scatter:previousClaim` | Predicate | Links a claim to the previous claim in the chain |
-| `scatter:userSignature` | Predicate | The user's Ed25519 signature over the claim |
-| `scatter:serverSignature` | Predicate | The server's Ed25519 signature over the claim |
-| `scatter:seqID` | Predicate | The server-assigned sequence ID |
-| `scatter:term` | Predicate | Links an acknowledgment node to the term it references |
-| `scatter:priorClaim` | Predicate | Links an acknowledgment node to the prior claim for that term |
-| `scatter:acknowledgesPriorUse` | Predicate | Links a claim to its term acknowledgment nodes |
-| `scatter:hasPublicKey` | Predicate | Links a server identity to its public key |
-| `scatter:keyType` | Predicate | Declares the algorithm of a public key |
+| `scatter:ClaimTriple` | Class | A triple as claimed |
+| `scatter:SignedClaim` | Class | A claim the server accepted: sequenced, timestamped and signed by it |
+| `scatter:PublicKey` | Class | A registered public key |
+| `scatter:SandboxDomain` | Class | The `.sandbox` domain an instance is given when none is configured |
+| `scatter:claimedIn` | Predicate | From a claimed triple to its claim |
+| `scatter:previousClaim` | Predicate | From a claim to the one before it in the actor's chain |
+| `scatter:userSignature` | Predicate | The actor's signature |
+| `scatter:serverSignature` | Predicate | The accepting server's signature |
+| `scatter:seqID` | Predicate | The sequence ID the accepting server assigned |
+| `scatter:term` | Predicate | From an acknowledgment to the term it is about |
+| `scatter:priorClaim` | Predicate | From an acknowledgment to the claim that last used the term |
+| `scatter:acknowledgesPriorUse` | Predicate | From a claim to each of its acknowledgments |
+| `scatter:hasPublicKey` | Predicate | From an actor to its public key |
+| `scatter:keyType` | Predicate | From a public key to its algorithm |
 | `scatter:ed25519` | Individual | The Ed25519 key type |
-| `scatter:owner` | Predicate | Links a key to its owner |
+| `scatter:owner` | Predicate | From a public key to its actor |
 
-### Standard Vocabulary Used
+### Standard vocabulary used
 
-| URI | Description |
+| IRI | Description |
 |---|---|
-| `rdf:type` | RDF type predicate |
-| `rdf:Statement` | RDF reification class |
-| `rdf:subject` | RDF reification — the subject of a reified triple |
-| `rdf:predicate` | RDF reification — the predicate of a reified triple |
-| `rdf:object` | RDF reification — the object of a reified triple |
-| `prov:wasAttributedTo` | PROV — links a claim to its author |
-| `prov:generatedAtTime` | PROV — the timestamp when the claim was recorded |
+| `rdf:type`, `rdf:Statement`, `rdf:subject`, `rdf:predicate`, `rdf:object` | RDF reification of each claimed triple |
+| `rdf:type` | Also the class of an accepted claim, a public key and a domain |
+| `prov:wasAttributedTo` | From a claim to its actor |
+| `prov:generatedAtTime` | When the server accepted the claim |

@@ -1,0 +1,21 @@
+[package]
+name = "scatterbase-cli"
+description = "The scatterbase command-line interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "scatterbase"
+path = "src/main.rs"
+
+[dependencies]
+scatterbase-kernel.workspace = true
+scatter-claims.workspace = true
+scatter-quadstore.workspace = true
+oxrdf.workspace = true
+scatter-vocab.workspace = true
+dotenv.workspace = true
+ed25519-dalek.workspace = true
+chrono.workspace = true
