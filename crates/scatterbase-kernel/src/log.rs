@@ -17,12 +17,24 @@
 //! | 0 | `key:{key ID}` | The server's public key. This is the instance's **founding record**: it is signed by the key it registers, and everything else in the log is checked against that key. |
 //! | 1 | `graph:server` | The server partition itself: partition 0 and its policies |
 //! | 2 | `graph:claim` | The claim partition: its ID, 64 random bits, and its policies |
-//! | 3 | `graph:meta` | The `meta` graph, a projection |
+//! | 3 | `graph:mutable` | The mutable partition: its ID and its policies |
+//! | 4 | `graph:meta` | The `meta` graph, a projection |
 //!
 //! The `graph:` records are the instance's graph registry, filled in from the rows of
 //! [`GRAPHS_TOML`]. Each is attested by the server under the founding record's authority.
 //! The claim partition is found by its `graph:claim` record, and the server's keys by the
 //! `key:` records, which form a chain: a later key must be signed by the one before it.
+//!
+//! # The mutable partition
+//!
+//! The mutable partition holds what can be taken back, which for now is the keys actors
+//! sign with. A key is registered by a `scatter:v0/key` record whose header key is the
+//! actor's IRI and whose content is a [`scatter_actors::signing::KeyRecord`]: the key ID,
+//! the algorithm, the public key and the time it is valid from. A later record for the same
+//! key ID with `revoked` set revokes it. Each record is attested by the server under the
+//! founding record's authority, so only the server registers or revokes a key. An actor
+//! may have several keys at once, and a claim's signature is accepted if any of them that
+//! is valid at the time verifies it.
 //!
 //! # The claim record
 //!
@@ -47,6 +59,8 @@ use oxttl::NTriplesParser;
 use pollster::block_on;
 use scatter_claims::id::ntriples_line;
 use scatter_claims::{Acknowledgments, Claim, ClaimId, Envelope, Signature, SignedClaim};
+use scatter_actors::signing::{current_keys, KeyRecord, PublicKey};
+use scatter_actors::time::Timestamp;
 use scatter_integrity::attest::{founding_attestation, instance_attestation, Authority};
 use scatter_integrity::checkpoint::{host_of, tenant_origin};
 use scatter_integrity::{CheckpointStore, FileCheckpoints, KeyChain, Level, Verify};
@@ -60,12 +74,14 @@ use scatter_log::segments::SegmentStore;
 use scatter_log::store::{Draft, LogStore, Slot};
 use scatter_log::tree::Segments;
 
-use crate::instance::{Instance, GRAPH_CLAIM, GRAPH_SERVER};
+use crate::instance::{Instance, GRAPH_CLAIM, GRAPH_MUTABLE, GRAPH_SERVER};
 
 /// The graphs of a Scatterbase instance: the rows its `graph:` records are filled in from.
 pub const GRAPHS_TOML: &str = include_str!("graphs.toml");
 /// The payload type of a claim record.
 pub const PAYLOAD_CLAIM: &str = "scatter:v0/claim";
+/// The payload type of an actor's key record.
+pub const PAYLOAD_KEY: &str = "scatter:v0/key";
 /// The server partition, which founds the instance and registers its graphs.
 pub const SERVER_PARTITION: u64 = CONFIG_PARTITION;
 /// The segment exponent of both partitions: 2^16 records to a segment file.
@@ -92,8 +108,14 @@ pub struct ClaimLog {
     origin: String,
     /// The checkpoint origin of the server partition.
     server_origin: String,
+    /// The mutable partition, as its `graph:mutable` record names it, and its origin.
+    mutable: u64,
+    mutable_origin: String,
     /// The server's keys, from the `key:` records of the server partition.
     chain: KeyChain,
+    /// The IRI the server attests as, and the founding record its attestations cite.
+    server: NamedNode,
+    authority: Authority,
 }
 
 fn other(e: impl std::fmt::Display) -> io::Error {
@@ -106,6 +128,10 @@ fn corrupt(offset: u64, what: impl std::fmt::Display) -> io::Error {
 
 fn invalid(what: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, format!("log: {what}"))
+}
+
+fn now() -> Timestamp {
+    Timestamp(u64::try_from(chrono::Utc::now().timestamp_micros()).unwrap_or(0))
 }
 
 fn origin_of(instance: &Instance, partition_name: &str) -> String {
@@ -162,10 +188,12 @@ impl ClaimLog {
 
         // The graph registry: one record for each row, under the founding record's authority
         let claim_partition = fresh_partition_id();
+        let mutable_partition = fresh_partition_id();
         for graph in registry.graphs() {
             let entry = match (graph.kind, graph.name.as_str()) {
                 (Kind::Source, GRAPH_SERVER) => GraphEntry::source(graph, graph.name.clone(), SERVER_PARTITION, SEGMENT_EXPONENT),
                 (Kind::Source, GRAPH_CLAIM) => GraphEntry::source(graph, graph.name.clone(), claim_partition, SEGMENT_EXPONENT),
+                (Kind::Source, GRAPH_MUTABLE) => GraphEntry::source(graph, graph.name.clone(), mutable_partition, SEGMENT_EXPONENT),
                 (Kind::Source, name) => return Err(invalid(format!("no partition is made for the source graph `{name}`"))),
                 (Kind::Projection, _) => GraphEntry {
                     kind: "graph".into(),
@@ -186,11 +214,13 @@ impl ClaimLog {
                 .map_err(|_| invalid("a graph record does not encode"))?;
             block_on(store.append(SERVER_PARTITION, draft(entry.key(), &content, &attestation)?)).map_err(other)?;
         }
-        // Both source rows were given partitions above, so this fails only on a registry
+        // Every source row was given a partition above, so this fails only on a registry
         // that lacks one of them
-        row(GRAPH_SERVER)?;
-        row(GRAPH_CLAIM)?;
+        for name in [GRAPH_SERVER, GRAPH_CLAIM, GRAPH_MUTABLE] {
+            row(name)?;
+        }
         block_on(store.create_partition(claim_partition, segments)).map_err(other)?;
+        block_on(store.create_partition(mutable_partition, segments)).map_err(other)?;
 
         let mut checkpoints = FileCheckpoints::new(&instance.log_dir);
         let server_origin = origin_of(instance, GRAPH_SERVER);
@@ -215,20 +245,27 @@ impl ClaimLog {
             return Err(invalid("the server partition registers no key"));
         }
 
-        // The claim partition is the one the latest `graph:claim` record names
-        let key = format!("graph:{GRAPH_CLAIM}");
-        let partition = server_records.iter().rev()
-            .filter(|record| record.header().payload_type == PAYLOAD_CONFIG && record.header().key.as_deref() == Some(key.as_str()))
-            .find_map(|record| GraphEntry::from_value(record.body().content().value().ok()??).ok()?.partition)
-            .ok_or_else(|| invalid("the server partition registers no claim partition"))?;
+        // A partition is the one the latest `graph:` record of its name gives
+        let partition_of = |name: &str| -> io::Result<u64> {
+            let key = format!("graph:{name}");
+            server_records.iter().rev()
+                .filter(|record| record.header().payload_type == PAYLOAD_CONFIG && record.header().key.as_deref() == Some(key.as_str()))
+                .find_map(|record| GraphEntry::from_value(record.body().content().value().ok()??).ok()?.partition)
+                .ok_or_else(|| invalid(format!("the server partition registers no {name} partition")))
+        };
+        let founding = server_records.first().ok_or_else(|| invalid("the server partition is empty"))?;
 
         Ok(Self {
+            partition: partition_of(GRAPH_CLAIM)?,
+            mutable: partition_of(GRAPH_MUTABLE)?,
+            authority: Authority { partition: SERVER_PARTITION, offset: 0, leaf: founding.leaf() },
             store,
             checkpoints: FileCheckpoints::new(&instance.log_dir),
-            partition,
             origin: origin_of(instance, GRAPH_CLAIM),
+            mutable_origin: origin_of(instance, GRAPH_MUTABLE),
             server_origin: origin_of(instance, GRAPH_SERVER),
             chain,
+            server: instance.server.clone(),
         })
     }
 
@@ -268,18 +305,94 @@ impl ClaimLog {
         Ok(graphs)
     }
 
-    /// Appends an accepted claim and signs a checkpoint of the new head. Returns the offset.
-    ///
-    /// The claim's sequence ID must be the offset it takes, so that the server's signature
-    /// commits to the claim's place in the log, and `server_key` must be the server's
-    /// current key.
-    pub fn append(&mut self, signed: &SignedClaim, actor_key: &VerifyingKey, server_key: &SigningKey) -> io::Result<u64> {
+    fn require_server_key(&self, server_key: &SigningKey) -> io::Result<()> {
         if server_key.verifying_key() != self.server_key() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "the signing key is not the key the server partition registers",
             ));
         }
+        Ok(())
+    }
+
+    /// Appends a key record for an actor, attested by the server, and signs a checkpoint.
+    fn append_key_record(&mut self, actor: &NamedNode, record: &KeyRecord, at: Timestamp, server_key: &SigningKey) -> io::Result<()> {
+        self.require_server_key(server_key)?;
+        let content = scatter_log::cbor::to_value(record).map_err(other)?;
+        let comment = Value::Null;
+        let attestation = instance_attestation(server_key, self.server.as_str(), &self.authority, None, false, &content, &comment)
+            .map_err(|_| invalid("a key record does not encode"))?;
+        let draft = Draft {
+            appended_at: at.as_micros(),
+            payload_type: PAYLOAD_KEY.into(),
+            key: Some(actor.as_str().to_string()),
+            revid: None,
+            logid: None,
+            page_id: None,
+            body: Body::core(&content, &comment, &attestation).map_err(other)?,
+        };
+        block_on(self.store.append(self.mutable, draft)).map_err(other)?;
+        let checkpoint = block_on(scatter_integrity::checkpoints::checkpoint(
+            &self.store, self.mutable, &self.mutable_origin, server_key,
+        )).map_err(other)?;
+        block_on(self.checkpoints.put(self.mutable, &checkpoint)).map_err(other)?;
+        Ok(())
+    }
+
+    /// Registers a public key for an actor, valid from now. Returns its key record.
+    pub fn register_key(&mut self, actor: &NamedNode, key: &VerifyingKey, server_key: &SigningKey) -> io::Result<KeyRecord> {
+        let now = now();
+        let record = KeyRecord::register(PublicKey(key.to_bytes()), now, None).map_err(invalid)?;
+        self.append_key_record(actor, &record, now, server_key)?;
+        Ok(record)
+    }
+
+    /// Revokes every key an actor has. Returns the records that were revoked.
+    pub fn revoke_keys(&mut self, actor: &NamedNode, server_key: &SigningKey) -> io::Result<Vec<KeyRecord>> {
+        let records = self.key_records(actor)?;
+        let revoked: Vec<KeyRecord> = current_keys(&records).into_iter().cloned().collect();
+        for record in &revoked {
+            self.append_key_record(actor, &record.revoke(), now(), server_key)?;
+        }
+        Ok(revoked)
+    }
+
+    /// Every key record of the mutable partition, in log order, each with its actor.
+    pub fn all_key_records(&self) -> io::Result<Vec<(NamedNode, KeyRecord)>> {
+        records(&self.store, self.mutable)?.iter()
+            .filter(|record| record.header().payload_type == PAYLOAD_KEY)
+            .map(|record| {
+                let offset = record.header().offset;
+                let bad = |what: String| invalid(format!("the mutable partition, offset {offset}: {what}"));
+                let actor = record.header().key.as_deref()
+                    .and_then(|key| NamedNode::new(key).ok())
+                    .ok_or_else(|| bad("the record's key is not an actor's IRI".into()))?;
+                let content = record.body().content().value().map_err(|e| bad(e.to_string()))?
+                    .ok_or_else(|| bad("the key record was erased".into()))?;
+                let key: KeyRecord = scatter_log::cbor::from_value(content).map_err(|e| bad(e.to_string()))?;
+                key.validate().map_err(|e| bad(e.to_string()))?;
+                Ok((actor, key))
+            })
+            .collect()
+    }
+
+    /// The key records of one actor, in log order.
+    pub fn key_records(&self, actor: &NamedNode) -> io::Result<Vec<KeyRecord>> {
+        Ok(self.all_key_records()?.into_iter().filter(|(of, _)| of == actor).map(|(_, record)| record).collect())
+    }
+
+    /// The keys an actor has now: registered and not revoked.
+    pub fn current_keys(&self, actor: &NamedNode) -> io::Result<Vec<KeyRecord>> {
+        Ok(current_keys(&self.key_records(actor)?).into_iter().cloned().collect())
+    }
+
+    /// Appends an accepted claim and signs a checkpoint of the new head. Returns the offset.
+    ///
+    /// The claim's sequence ID must be the offset it takes, so that the server's signature
+    /// commits to the claim's place in the log, and `server_key` must be the server's
+    /// current key.
+    pub fn append(&mut self, signed: &SignedClaim, actor_key: &VerifyingKey, server_key: &SigningKey) -> io::Result<u64> {
+        self.require_server_key(server_key)?;
         let offset = self.size()?;
         if signed.sequence_id() != offset.to_string() {
             return Err(io::Error::new(
@@ -325,7 +438,7 @@ impl ClaimLog {
     /// Verifies the whole log and returns the number of claims in it.
     ///
     /// `server_key` is the key the caller expects the server to have, and must be the
-    /// current key of the server partition's chain. Both partitions are then checked by
+    /// current key of the server partition's chain. Every partition is then checked by
     /// [`scatter_integrity::verify`]: headers, body commitments, the Merkle tree, the signed
     /// checkpoints, and in the server partition the founding record, the key chain and
     /// every attestation. Every claim must also read back as the claim its key names at the
@@ -338,6 +451,7 @@ impl ClaimLog {
         for (name, partition, origin, is_config) in [
             (GRAPH_SERVER, SERVER_PARTITION, &self.server_origin, true),
             (GRAPH_CLAIM, self.partition, &self.origin, false),
+            (GRAPH_MUTABLE, self.mutable, &self.mutable_origin, false),
         ] {
             let report = block_on(scatter_integrity::verify(&self.store, &self.checkpoints, &Verify {
                 partition,
@@ -358,9 +472,21 @@ impl ClaimLog {
             }
         }
 
+        let key_records = self.all_key_records()?;
         for (offset, stored) in self.claims(0)? {
             if self.chain.lookup(&scatter_log::registry::key_id(stored.server_key.as_bytes())).is_none() {
                 return Err(corrupt(offset, "accepted under a key that is not the server's"));
+            }
+            // The key the actor's signature was checked against is one of the server's for
+            // the server, and for anyone else one the server registered for that actor
+            let attribution = stored.signed.envelope().claim().attribution();
+            let known = if *attribution == self.server {
+                self.chain.lookup(&scatter_log::registry::key_id(stored.actor_key.as_bytes())).is_some()
+            } else {
+                key_records.iter().any(|(actor, record)| actor == attribution && record.public_key.0 == stored.actor_key.to_bytes())
+            };
+            if !known {
+                return Err(corrupt(offset, format!("signed with a key that was never registered for {attribution}")));
             }
             stored.signed.envelope().verify(&stored.actor_key).map_err(|e| corrupt(offset, e))?;
             stored.signed.verify(&stored.server_key).map_err(|e| corrupt(offset, e))?;

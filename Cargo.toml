@@ -29,6 +29,7 @@ chrono = "0.4.26"
 # the log crates are not on crates.io yet, and scatter-vocab's published version predates
 # the claim and key terms.
 scatter-vocab = { git = "https://github.com/scatterbase/triplespace", rev = "7839c357743fa2024bdb88bbff7dac4ae3e89f68" }
+scatter-actors = { git = "https://github.com/scatterbase/triplespace", rev = "7839c357743fa2024bdb88bbff7dac4ae3e89f68" }
 scatter-log = { git = "https://github.com/scatterbase/triplespace", rev = "7839c357743fa2024bdb88bbff7dac4ae3e89f68" }
 scatter-integrity = { git = "https://github.com/scatterbase/triplespace", rev = "7839c357743fa2024bdb88bbff7dac4ae3e89f68" }
 # Driving the log's futures from synchronous code: the file backend does its I/O inline

@@ -891,6 +891,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a0d197bd2c9dc6e53b84da9556a69ba4cdfab8619eb41a8bd1cc2027a0f6b1d"
 
 [[package]]
+name = "scatter-actors"
+version = "0.0.1"
+source = "git+https://github.com/scatterbase/triplespace?rev=7839c357743fa2024bdb88bbff7dac4ae3e89f68#7839c357743fa2024bdb88bbff7dac4ae3e89f68"
+dependencies = [
+ "ed25519-dalek",
+ "getrandom 0.3.3",
+ "oxrdf",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "scatter-claims"
 version = "0.0.1"
 dependencies = [
@@ -982,6 +997,7 @@ dependencies = [
  "pollster",
  "rand",
  "rand_core 0.6.4",
+ "scatter-actors",
  "scatter-claims",
  "scatter-integrity",
  "scatter-log",

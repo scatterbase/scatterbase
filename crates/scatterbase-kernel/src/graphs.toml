@@ -30,6 +30,16 @@ payload_types = ["scatter:v0/claim"]
 defined_in = "docs/claim-envelopes.md, The log"
 
 [[graph]]
+name = "mutable"
+kind = "source"
+scope = "instance"
+history = "full"
+integrity = "logged"
+export = "internal"
+payload_types = ["scatter:v0/key"]
+defined_in = "docs/claim-envelopes.md, The log"
+
+[[graph]]
 name = "meta"
 kind = "projection"
 scope = "instance"

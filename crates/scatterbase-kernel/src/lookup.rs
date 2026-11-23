@@ -1,36 +1,31 @@
 //! Lookups over what the store holds.
 //!
 //! A [`Snapshot`] is the quad store ([`crate::storage`]) read once into memory. Its lookups answer what
-//! accepting and preparing a claim need to know: which claim last used a term, which claim
-//! an actor made last, and which key an actor has registered. "Last" is by the sequence ID
-//! the server assigned. Each is a few pattern lookups over the store's indexes
+//! accepting and preparing a claim need to know: which claim last used a term and which
+//! claim an actor made last. "Last" is by the sequence ID the server assigned. (An actor's
+//! keys are not looked up here: they are read from the log, [`crate::log`].) Each is a few pattern lookups over the store's indexes
 //! ([`scatter_quadstore::Pattern`]); they are the kernel's own access paths, built on the
 //! quad-store contract and not part of it.
 
 use std::io;
 use std::path::Path;
 
-use ed25519_dalek::VerifyingKey;
 use oxrdf::{NamedNode, NamedNodeRef, NamedOrBlankNode, Term, Triple};
 use scatter_claims::id::ACK_NS;
-use scatter_claims::{ClaimId, TripleHash};
+use scatter_claims::ClaimId;
 use scatter_quadstore::{MemoryStore, NQuadsFile, Pattern};
 use scatter_vocab::{prov, scatter};
 
-use crate::instance::{Instance, GRAPH_META, GRAPH_SERVER};
-use crate::keys::public_key_from_iri;
+use crate::instance::{Instance, GRAPH_META};
 
 /// The quads of the store, as they were when it was read.
 ///
-/// The lookups read two graphs only: `meta`, which holds what was recorded about each
-/// accepted claim, and `server`, which holds what the server itself claimed. A claim's
-/// own triples are never taken for either, whatever they say.
+/// The lookups read one graph only: `meta`, which holds what was recorded about each
+/// accepted claim. A claim's own triples are never taken for that, whatever they say.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
     quads: MemoryStore,
     meta: NamedNode,
-    server_graph: NamedNode,
-    server: NamedNode,
 }
 
 impl Snapshot {
@@ -44,8 +39,6 @@ impl Snapshot {
         Self {
             quads,
             meta: instance.graph(GRAPH_META),
-            server_graph: instance.graph(GRAPH_SERVER),
-            server: instance.server.clone(),
         }
     }
 
@@ -100,35 +93,6 @@ impl Snapshot {
             .iter()
             .filter_map(|quad| claim_of(&quad.subject))
             .collect()
-    }
-
-    /// The public key registered for an actor last, if one is.
-    ///
-    /// A key is registered by a claim of the server's: the registration is read from the
-    /// `server` graph, and it is as recent as the latest of the server's claims that hold
-    /// it. A registration another actor claims, or claims again, counts for nothing.
-    pub fn public_key(&self, actor: NamedNodeRef<'_>) -> Option<VerifyingKey> {
-        let by_server = self.claims_by(self.server.as_ref());
-        let registrations = Pattern::any().graph(&self.server_graph).subject(actor).predicate(scatter::HAS_PUBLIC_KEY);
-        self.quads.matching(&registrations)
-            .into_iter()
-            .filter_map(|registration| {
-                let Term::NamedNode(key_iri) = &registration.object else { return None };
-                let key = public_key_from_iri(key_iri.as_ref())?;
-                let triple_iri = TripleHash::of(&Triple::from(registration.clone())).iri();
-                let sequence = self.quads.matching(&self.about().subject(&triple_iri).predicate(scatter::CLAIMED_IN))
-                    .iter()
-                    .filter_map(|quad| match &quad.object {
-                        Term::NamedNode(claim) => ClaimId::from_iri(claim.as_ref()),
-                        _ => None,
-                    })
-                    .filter(|claim| by_server.contains(claim))
-                    .filter_map(|claim| self.sequence_id(claim))
-                    .max()?;
-                Some((sequence, key))
-            })
-            .max_by_key(|(sequence, _)| *sequence)
-            .map(|(_, key)| key)
     }
 
     /// The sequence ID the server gave a claim, which is its offset in the claim log, if

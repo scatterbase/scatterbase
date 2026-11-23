@@ -10,6 +10,7 @@ repository.workspace = true
 scatter-claims.workspace = true
 scatter-quadstore.workspace = true
 scatter-log.workspace = true
+scatter-actors.workspace = true
 scatter-integrity.workspace = true
 pollster.workspace = true
 rand.workspace = true

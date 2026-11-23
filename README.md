@@ -81,10 +81,15 @@ Register a key for an actor, so that claims attributed to it are accepted:
 ```bash
 scatterbase key add --attribution https://example.org/alice
 ```
-This generates a new Ed25519 key for the actor, keeps it beside the server's key, and registers its public key in a claim by the server. `claim prepare` and `claim write` then sign that actor's claims with it. Use `--file <keyfile>` to register a key you already hold, and `--private-key <keyfile>` when preparing a claim with it. `claim submit` verifies every claim's signature against the actor's registered key.
+This generates a new Ed25519 key for the actor, keeps it beside the server's key, and registers its public key in the log as a key record written by the server. `claim prepare` and `claim write` then sign that actor's claims with it. Use `--file <keyfile>` to register a key you already hold, and `--private-key <keyfile>` when preparing a claim with it. `claim submit` verifies every claim's signature against the actor's registered keys.
+
+Revoke an actor's keys, after which `key add` registers a new one:
+```bash
+scatterbase key revoke --attribution https://example.org/alice
+```
 
 #### Claim Log
-The log under `data/log` has two partitions. The server partition holds the server's key, as a self-signed founding record, and the registry of the instance's graphs. The claim partition holds every accepted claim, with a checkpoint signed by the server after each one. The storage file is derived from the claims.
+The log under `data/log` has three partitions. The server partition holds the server's key, as a self-signed founding record, and the registry of the instance's graphs. The mutable partition holds the keys registered for actors. The claim partition holds every accepted claim. The server signs a checkpoint of a partition after each record. The storage file is derived from the claims.
 
 - **Verify the log**: check the server's key chain, the signed checkpoints, every record and every signature.
   ```bash

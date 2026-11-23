@@ -7,7 +7,6 @@ use oxrdf::{NamedNode, Triple};
 
 use crate::claim::{prepare, submit};
 use crate::instance::Instance;
-use crate::keys;
 use crate::log::ClaimLog;
 use crate::lookup::Snapshot;
 use scatter_vocab::{rdf, schema, scatter};
@@ -24,29 +23,21 @@ fn is_sandbox(domain: &NamedNode) -> bool {
     host.split(['/', ':', '?', '#']).next().is_some_and(|host| host.ends_with(".sandbox"))
 }
 
-/// Founds an instance: creates its log ([`ClaimLog::create`]) and writes its first two
-/// claims, both by the server:
-///
-/// 1. the registration of the server's key, which says in RDF what the founding record of
-///    the log's server partition establishes;
-/// 2. the declaration of the domain as a `schema:Dataset` and, if it is a sandbox domain,
-///    a `scatter:SandboxDomain`.
+/// Founds an instance: creates its log ([`ClaimLog::create`]), whose founding record
+/// registers the server's key, and writes its first claim, by the server: the declaration
+/// of the domain as a `schema:Dataset` and, if it is a sandbox domain, a
+/// `scatter:SandboxDomain`.
 pub fn create_initial_claims(instance: &Instance, server_key: &SigningKey) -> io::Result<()> {
     ClaimLog::create(instance, server_key)?;
-    let invalid = |e| io::Error::new(io::ErrorKind::InvalidData, e);
     let (domain, server) = (instance.domain.as_str(), &instance.server);
-    let store = || Snapshot::load(instance);
-
-    let registration = keys::registration(server, &server_key.verifying_key());
-    let envelope = prepare(registration, server.clone(), domain, &store()?, server_key).map_err(invalid)?;
-    submit(envelope, instance, server_key)?;
 
     let domain_iri = NamedNode::new(domain).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     let mut declaration = vec![create_initial_triple(domain)];
     if is_sandbox(&domain_iri) {
         declaration.push(Triple::new(domain_iri, rdf::TYPE, scatter::SANDBOX_DOMAIN));
     }
-    let envelope = prepare(declaration, server.clone(), domain, &store()?, server_key).map_err(invalid)?;
+    let envelope = prepare(declaration, server.clone(), domain, &Snapshot::load(instance)?, server_key)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     submit(envelope, instance, server_key)?;
     Ok(())
 }
@@ -54,6 +45,7 @@ pub fn create_initial_claims(instance: &Instance, server_key: &SigningKey) -> io
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keys;
     use scatter_claims::ClaimId;
     use crate::instance::{GRAPH_CLAIM, GRAPH_SERVER};
 
@@ -67,15 +59,14 @@ mod tests {
         create_initial_claims(&instance, &server_key).unwrap();
 
         let store = Snapshot::load(&instance).unwrap();
-        assert_eq!(store.public_key(server.as_ref()), Some(server_key.verifying_key()));
-        assert_eq!(store.triples_in(&instance.graph(GRAPH_SERVER)).len(), 5);
-        assert!(store.triples_in(&instance.graph(GRAPH_SERVER)).contains(&create_initial_triple("http://example.org")));
+        assert_eq!(store.triples_in(&instance.graph(GRAPH_SERVER)), vec![create_initial_triple("http://example.org")]);
         assert!(store.triples_in(&instance.graph(GRAPH_CLAIM)).is_empty());
-        let domain = NamedNode::new("http://example.org").unwrap();
+        assert_eq!(ClaimLog::open(&instance).unwrap().server_key(), server_key.verifying_key());
         // Only a sandbox domain is typed as one
         assert!(!store.triples_in(&instance.graph(GRAPH_SERVER)).iter().any(|t| t.object == oxrdf::Term::from(scatter::SANDBOX_DOMAIN)));
         assert!(is_sandbox(&NamedNode::new("http://abcdefghijklmnop.sandbox").unwrap()));
         assert!(!is_sandbox(&NamedNode::new("http://sandbox.example.org/x.sandbox").unwrap()));
+        let domain = NamedNode::new("http://example.org").unwrap();
         assert_ne!(store.latest_claim_using(domain.as_ref()), ClaimId::NONE);
         assert_eq!(store.latest_claim_using(domain.as_ref()), store.latest_claim_by(server.as_ref()));
     }

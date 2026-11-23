@@ -84,7 +84,13 @@ The sequence ID is the claim's offset in the claim partition of the log, written
 
 ## Keys
 
-A public key is named by `urn:ed25519:{key}`, the 32 bytes in z-base-32. An actor's key is registered by a claim holding:
+A public key is named by `urn:ed25519:{key}`, the 32 bytes in z-base-32. Its **key ID** is the SHA-256 of the public key in z-base-32.
+
+**The server's key** is the key of the founding record of the log's server partition, and a claim by the server is checked against it.
+
+**An actor's keys** are registered by the server in the log's mutable partition, as `scatter-actors` key records (below). An actor may have several keys at once. A claim by an actor is accepted if its signature verifies against any key of the actor's that is registered, not revoked and valid at the time; a claim by an actor with no such key is refused. `scatterbase key add` registers a key and `scatterbase key revoke` revokes an actor's keys. A revoked key signs no more, and the claims it signed stay in the log and stay verifiable, since each claim record keeps the public key it was checked against.
+
+Nothing anyone claims registers a key. The keys actors have now are also written to the store, in the `mutable` graph, as:
 
 ```turtle
 <{actor}> scatter:hasPublicKey <urn:ed25519:{key}> .
@@ -93,7 +99,7 @@ A public key is named by `urn:ed25519:{key}`, the 32 bytes in z-base-32. An acto
 <urn:ed25519:{key}> scatter:owner <{actor}> .
 ```
 
-The actor's key is the one registered by the latest such claim. The server refuses a claim whose signature does not verify against its actor's key, and a claim by an actor with no registered key. The server's own key is not registered this way: it is the key of the founding record of the log's server partition, and a claim by the server is checked against that. `scatterbase init` also claims the server's registration, so that the key is in the store as RDF like every other, but it is the founding record that establishes it. `scatterbase key add` registers every other actor's key in a claim by the server.
+That graph is derived from the key records, and a revoked key leaves it. The same triples claimed by an actor, or by the server, are in the `claim` or `server` graph and are only what was claimed.
 
 Each actor has its own key. The server's private key is in the file the configuration names; `key add` writes an actor's new key to `actors/{hash}.ed25519.private` beside it, where `{hash}` is the SHA-256 of the actor's IRI in z-base-32.
 
@@ -141,7 +147,7 @@ In Turtle the envelope is written one triple per line: the claim's triples in or
 
 ## The log
 
-Everything an instance accepts is kept in an append-only log, which is its source of truth. The log is a `scatter-log` file store with two partitions. Each keeps every record, and after each append the server signs a checkpoint of the partition's Merkle tree head, under the origin `{host}/log/{name}`, so a copy of the log can be shown to be complete and in order. `scatterbase log verify` checks the key chain, the checkpoints, every record and every signature.
+Everything an instance accepts is kept in an append-only log, which is its source of truth. The log is a `scatter-log` file store with three partitions. Each keeps every record, and after each append the server signs a checkpoint of the partition's Merkle tree head, under the origin `{host}/log/{name}`, so a copy of the log can be shown to be complete and in order. `scatterbase log verify` checks the key chain, the checkpoints, every record and every signature.
 
 ### The server partition
 
@@ -152,9 +158,20 @@ Partition 0 founds and describes the instance. It holds `scatter:v0/config` reco
 | 0 | `key:{key ID}` | The server's public key. This is the instance's **founding record**: it is signed by the key it registers, and everything else in the log is checked against that key. |
 | 1 | `graph:server` | The server partition itself: partition 0 and its policies |
 | 2 | `graph:claim` | The claim partition: its ID, 64 random bits, and its policies |
-| 3 | `graph:meta` | The `meta` graph, a projection |
+| 3 | `graph:mutable` | The mutable partition: its ID and its policies |
+| 4 | `graph:meta` | The `meta` graph, a projection |
 
 The `graph:` records are the instance's **graph registry**. Each is attested by the server under the founding record's authority. The claim partition is the one the `graph:claim` record names. The `key:` records form a chain, in which a later key must be signed by the one before it, and the server's key is the last of the chain.
+
+### The mutable partition
+
+The mutable partition holds what can be taken back, which for now is the keys actors sign with. A key is registered by a record of payload type `scatter:v0/key`, whose header key is the actor's IRI and whose content is a `scatter-actors` key record:
+
+```text
+{"key_id": text, "alg": "ed25519", "public_key": bytes(32), "valid_from": microseconds since the epoch}
+```
+
+with `valid_until` if the key expires. A later record for the same key ID with `"revoked": true` revokes it. Each record is attested by the server under the founding record's authority, so only the server registers or revokes a key.
 
 ### The claim partition
 
@@ -170,19 +187,17 @@ A claim is one record of payload type `scatter:v0/claim`. Its header key is the 
 
 ## The store and its graphs
 
-The storage file is derived from the log: it is a `scatter-quadstore` N-Quads file holding the RDF form of every claim, below, and `scatterbase log rebuild` writes it again from the log. A claim is written into two of the instance's named graphs, whose IRIs are `{domain}/graph/{name}`:
+The storage file is derived from the log: it is a `scatter-quadstore` N-Quads file holding the RDF form of every claim, below, and `scatterbase log rebuild` writes it again from the log. The instance's named graphs have IRIs `{domain}/graph/{name}`, and a claim is written into two of them:
 
 | Graph | Holds |
 |---|---|
 | `claim` | The triples of every claim by an actor other than the server |
-| `server` | The triples of every claim by the server: registered keys and the domain. (The records of the server *partition* are configuration and are not projected into it.) |
+| `server` | The triples of every claim by the server, such as the declaration of the domain. (The records of the server *partition* are configuration and are not projected into it.) |
 | `meta` | Everything recorded about each claim: its reification, attribution, chain, acknowledgments, signatures, sequence ID, time and type |
+| `mutable` | The registration of each key an actor has now, derived from the key records of the mutable partition |
 | the default graph | Triples written outside any claim, by `scatterbase triple write` and `scatterbase domain init` |
 
-Only accepted claims are written to the three named graphs, and the server's lookups read `meta` and `server` alone:
-
-- the latest claim using a term, an actor's latest claim and a claim's sequence ID are read from `meta`;
-- an actor's key is the one registered in `server` by the latest of the *server's* claims holding the registration.
+Only what the log holds is written to the named graphs. The server's lookups read `meta` alone, for the latest claim using a term, an actor's latest claim and a claim's sequence ID, and keys are read from the log itself, never from the store.
 
 So nothing an actor claims is taken for a registered key or for what the server recorded about a claim, whatever its triples say. A claim that says `<alice> scatter:hasPublicKey <urn:ed25519:…>` or `scatter_claim:{C} scatter:seqID "999999"` is stored, in `claim`, as what its actor asserted and nothing more. The `meta` graph alone is enough to read every claim back, since it holds each claimed triple's reification.
 

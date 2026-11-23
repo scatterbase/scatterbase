@@ -1,18 +1,19 @@
 //! The instance's quad store: an N-Quads file, which the claim log is projected into.
 //!
-//! The store is a [`scatter_quadstore::NQuadsFile`]. What it holds is in four graphs:
+//! The store is a [`scatter_quadstore::NQuadsFile`]. What it holds is in five graphs:
 //!
 //! | Graph | Holds |
 //! |---|---|
 //! | `{domain}/graph/claim` | The triples of every claim by an actor other than the server |
-//! | `{domain}/graph/server` | The triples of every claim by the server: registered keys and the domain |
+//! | `{domain}/graph/server` | The triples of every claim by the server, such as the declaration of the domain |
 //! | `{domain}/graph/meta` | Everything recorded about each claim: its reification, attribution, chain, acknowledgments, signatures, sequence ID and time |
+//! | `{domain}/graph/mutable` | The registration of each key an actor has now |
 //! | the default graph | Triples written outside any claim, by `triple write` and `domain init` |
 //!
-//! Only the projection of the claim log ([`crate::projection`]) writes to the three named
-//! graphs, and the lookups ([`crate::lookup`]) read `meta` and `server` alone. So nothing an
-//! actor claims, and nothing in the default graph, is taken for a registered key or for
-//! what the server recorded about a claim.
+//! Only the projection of the log ([`crate::projection`]) writes to the named graphs. The
+//! lookups ([`crate::lookup`]) read `meta` alone, and keys are read from the log, not from
+//! the store. So nothing an actor claims, and nothing in the default graph, is taken for a
+//! registered key or for what the server recorded about a claim.
 
 use std::io;
 

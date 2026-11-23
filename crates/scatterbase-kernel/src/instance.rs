@@ -22,8 +22,11 @@ pub struct Instance {
 pub const GRAPH_CLAIM: &str = "claim";
 /// The graph of what the envelope and the server record about each claim.
 pub const GRAPH_META: &str = "meta";
-/// The graph of what the server itself claims: registered keys and the domain.
+/// The graph of what the server itself claims, such as the declaration of the domain.
 pub const GRAPH_SERVER: &str = "server";
+
+/// The graph of the keys registered for actors, and the partition of their key records.
+pub const GRAPH_MUTABLE: &str = "mutable";
 
 impl Instance {
     /// An instance whose log is the directory `log` beside its storage file.
