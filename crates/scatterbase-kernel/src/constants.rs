@@ -8,7 +8,7 @@ pub mod paths {
     pub const DEFAULT_ENV_FILE: &str = ".env";
     
     /// Default path for the storage file
-    pub const DEFAULT_STORAGE_FILE: &str = "data/scatterbase.nt";
+    pub const DEFAULT_STORAGE_FILE: &str = "data/scatterbase.nq";
     
     /// Default path for the prefix file
     pub const DEFAULT_PREFIX_FILE: &str = "data/prefixes.ttl";

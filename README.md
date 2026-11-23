@@ -4,7 +4,7 @@ Scatterbase is a Rust-based CLI tool for managing RDF triples, signed claims, an
 
 ## Overview
 
-Scatterbase allows users to create, sign, and store "claims" about RDF triples. These claims are attributed to specific identities (represented by URIs) and signed using ED25519 cryptography. The tool uses N-Triples as its primary storage format and supports both N-Triples and Turtle for input/output of claims.
+Scatterbase allows users to create, sign, and store "claims" about RDF triples. These claims are attributed to specific identities (represented by URIs) and signed using ED25519 cryptography. Accepted claims are kept in an append-only log, with an N-Quads store derived from it, and claims are read and written as N-Triples or Turtle.
 
 ## Key Features
 
@@ -13,7 +13,7 @@ Scatterbase allows users to create, sign, and store "claims" about RDF triples. 
 - **Identity & Keys**: Generate and manage ED25519 key pairs for signing claims.
 - **URI Prefix Support**: Use short prefixes (e.g., `schema:name`) instead of full URIs for better readability.
 - **Base32z Encoding**: Uses the human-friendly `z-base-32` encoding for keys and hashes.
-- **Claim Log**: Accepted claims are records of an append-only, checkpointed log; an N-Triples file is derived from it.
+- **Claim Log**: Accepted claims are records of an append-only, checkpointed log; an N-Quads store is derived from it, with claims, server claims and claim metadata in separate named graphs.
 - **Term Lookup**: Query the storage for the latest claim associated with a specific term.
 
 ## Installation
@@ -122,7 +122,7 @@ Scatterbase is currently in active development. Below is the status of core comp
 - [x] **Turtle Support**: Support for parsing Turtle files for claim preparation.
 - [x] **ED25519 Cryptography**: Key generation, signing, and verification.
 - [x] **Base32z Encoding**: Custom encoding for all identifiers.
-- [x] **File-based Storage**: Persistent storage in `.nt` files.
+- [x] **File-based Storage**: A checkpointed claim log, and an N-Quads store derived from it.
 - [x] **CLI Interface**: Robust command-line interface with help for all commands.
 - [x] **Claim Envelopes**: Implementation of signed claim structures with sequence IDs and timestamps.
 - [x] **Term Lookup**: Ability to scan storage for the most recent activity related to a term.
@@ -131,7 +131,7 @@ Scatterbase is currently in active development. Below is the status of core comp
 
 ## Data Formats
 
-- **Storage**: The claim log is a `scatter-log` file store of CBOR records. The derived storage file is standard N-Triples.
+- **Storage**: The claim log is a `scatter-log` file store of CBOR records. The derived storage file is standard N-Quads, in the graphs `{domain}/graph/claim`, `server` and `meta`.
 - **Claims**: Claims can be exported/imported as Turtle (`.ttl`) or N-Triples (`.nt`).
 - **Config**: Configuration is stored in a `.env` file in the project root or a custom location.
 

@@ -32,7 +32,7 @@ fn is_sandbox(domain: &NamedNode) -> bool {
 pub fn create_initial_claims(instance: &Instance, server_key: &SigningKey) -> io::Result<()> {
     let invalid = |e| io::Error::new(io::ErrorKind::InvalidData, e);
     let (domain, server) = (instance.domain.as_str(), &instance.server);
-    let store = || Snapshot::load(&instance.storage_file);
+    let store = || Snapshot::load(instance);
 
     let registration = keys::registration(server, &server_key.verifying_key());
     let envelope = prepare(registration, server.clone(), domain, &store()?, server_key).map_err(invalid)?;
@@ -52,6 +52,7 @@ pub fn create_initial_claims(instance: &Instance, server_key: &SigningKey) -> io
 mod tests {
     use super::*;
     use scatter_claims::ClaimId;
+    use crate::instance::{GRAPH_CLAIM, GRAPH_SERVER};
 
     #[test]
     fn an_instance_starts_with_the_key_and_the_domain() {
@@ -62,12 +63,14 @@ mod tests {
 
         create_initial_claims(&instance, &server_key).unwrap();
 
-        let store = Snapshot::load(&instance.storage_file).unwrap();
+        let store = Snapshot::load(&instance).unwrap();
         assert_eq!(store.public_key(server.as_ref()), Some(server_key.verifying_key()));
-        assert!(store.triples().contains(&create_initial_triple("http://example.org")));
+        assert_eq!(store.triples_in(&instance.graph(GRAPH_SERVER)).len(), 5);
+        assert!(store.triples_in(&instance.graph(GRAPH_SERVER)).contains(&create_initial_triple("http://example.org")));
+        assert!(store.triples_in(&instance.graph(GRAPH_CLAIM)).is_empty());
         let domain = NamedNode::new("http://example.org").unwrap();
         // Only a sandbox domain is typed as one
-        assert!(!store.triples().iter().any(|t| t.object == oxrdf::Term::from(scatter::SANDBOX_DOMAIN)));
+        assert!(!store.triples_in(&instance.graph(GRAPH_SERVER)).iter().any(|t| t.object == oxrdf::Term::from(scatter::SANDBOX_DOMAIN)));
         assert!(is_sandbox(&NamedNode::new("http://abcdefghijklmnop.sandbox").unwrap()));
         assert!(!is_sandbox(&NamedNode::new("http://sandbox.example.org/x.sandbox").unwrap()));
         assert_ne!(store.latest_claim_using(domain.as_ref()), ClaimId::NONE);

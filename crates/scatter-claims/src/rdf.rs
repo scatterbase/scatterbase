@@ -36,7 +36,7 @@
 use std::collections::BTreeSet;
 
 use oxrdf::vocab::{rdf, xsd};
-use oxrdf::{Literal, NamedNode, NamedNodeRef, NamedOrBlankNode, Term, Triple};
+use oxrdf::{GraphNameRef, Literal, NamedNode, NamedNodeRef, NamedOrBlankNode, Quad, Term, Triple};
 use scatter_vocab::{prov, scatter};
 
 use crate::claim::compare_triples;
@@ -129,6 +129,23 @@ impl Envelope {
 }
 
 impl SignedClaim {
+    /// The signed claim as quads in two graphs: the claim's own triples in `content`, and
+    /// every triple about the claim in `about`.
+    ///
+    /// What is read back from a store is in `about` alone: the claim's triples are there
+    /// too, reified, and [`SignedClaim::from_triples`] takes them from the reification. So
+    /// if nothing but accepted claims is written to `about`, no claim's content can pass
+    /// for what a server recorded about a claim.
+    pub fn to_quads<'a>(&self, content: impl Into<GraphNameRef<'a>>, about: impl Into<GraphNameRef<'a>>) -> Vec<Quad> {
+        let (content, about) = (content.into(), about.into());
+        self.groups().into_iter().enumerate()
+            .flat_map(|(group, triples)| {
+                let graph = if group == 0 { content } else { about };
+                triples.into_iter().map(move |triple| triple.in_graph(graph))
+            })
+            .collect()
+    }
+
     /// The signed claim as triples: the envelope's, then the server's.
     pub fn to_triples(&self) -> Vec<Triple> {
         self.groups().into_iter().flatten().collect()
@@ -374,6 +391,22 @@ mod tests {
         assert_eq!(untyped.len(), triples.len() - 1);
         assert!(matches!(SignedClaim::from_triples(&untyped), Err(ClaimError::Malformed(_))));
         assert!(SignedClaim::from_triples(&signed.envelope().to_triples()).is_err());
+    }
+
+    #[test]
+    fn quads_put_the_claims_triples_and_the_triples_about_it_in_two_graphs() {
+        let signed = signed();
+        let content = iri("http://example.org/graph/claim");
+        let about = iri("http://example.org/graph/meta");
+        let quads = signed.to_quads(&content, &about);
+        assert_eq!(quads.len(), signed.to_triples().len());
+
+        let in_graph = |graph: &NamedNode| -> Vec<Triple> {
+            quads.iter().filter(|q| q.graph_name == graph.clone().into()).cloned().map(Triple::from).collect()
+        };
+        assert_eq!(in_graph(&content), signed.envelope().claim().triples());
+        // The graph about the claim is enough to read it back
+        assert_eq!(SignedClaim::from_triples(&in_graph(&about)).unwrap(), signed);
     }
 
     #[test]

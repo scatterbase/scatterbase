@@ -4,6 +4,7 @@ use std::io;
 use std::path::Path;
 
 use scatterbase_kernel::lookup::Snapshot;
+use crate::config::Config;
 use scatterbase_kernel::uri::parse_iri;
 
 /// Handles the term latest command
@@ -20,31 +21,19 @@ use scatterbase_kernel::uri::parse_iri;
 /// 
 /// The claim hash of the most recent claim to use the specified term, or all zeros if not found
 pub fn handle_term_latest_command(term: &str, env_path: &str) -> io::Result<()> {
-    // Load environment variables from the .env file
-    dotenv::from_path(env_path).ok();
-
-    // Get the storage file path from the environment
-    let storage_file = match std::env::var("STORAGE_FILE") {
-        Ok(file) => file,
-        Err(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "STORAGE_FILE environment variable not found. Run 'scatterbase init' first."
-            ));
-        }
-    };
+    let config = Config::load(env_path).map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
 
     // Check if the storage file exists
-    if !Path::new(&storage_file).exists() {
+    if !Path::new(&config.storage_file).exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("Storage file not found: {}", storage_file)
+            format!("Storage file not found: {}", config.storage_file)
         ));
     }
 
     // Find the most recent claim to use the term
     let term = parse_iri(term).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    println!("{}", Snapshot::load(&storage_file)?.latest_claim_using(term.as_ref()));
+    println!("{}", Snapshot::load(&config.instance())?.latest_claim_using(term.as_ref()));
     Ok(())
 }
 

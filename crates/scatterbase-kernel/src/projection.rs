@@ -1,19 +1,20 @@
 //! The quad store as a projection of the claim log.
 //!
-//! The store ([`crate::storage`]) holds the triples of every claim in the log, in the RDF
-//! form of [`scatter_claims::rdf`]. It is derived: [`catch_up`] writes the claims the file does not
+//! The store ([`crate::storage`]) holds every claim in the log in the RDF form of
+//! [`scatter_claims::rdf`]: a claim's own triples in the `server` graph if the server made
+//! it and the `claim` graph otherwise, and the triples about it in the `meta` graph. It is derived: [`catch_up`] writes the claims the file does not
 //! hold yet, and [`rebuild`] writes it again from the first claim. How far the file has
 //! got is kept beside it, in `{storage file}.offset`, as the offset of the next claim to
 //! write.
 //!
-//! Triples written to the file by other means (`triple write`, `domain init`) are not in
-//! the log, so a rebuild does not bring them back.
+//! Triples written to the file by other means (`triple write`, `domain init`) are in the
+//! default graph and not in the log, so a rebuild does not bring them back.
 
 use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-use crate::instance::Instance;
+use crate::instance::{Instance, GRAPH_META};
 use crate::log::ClaimLog;
 use crate::storage;
 
@@ -42,8 +43,10 @@ pub fn catch_up(instance: &Instance, log: &ClaimLog) -> io::Result<u64> {
     }
 
     let mut store = storage::open(&instance.storage_file)?;
+    let meta = instance.graph(GRAPH_META);
     for (offset, stored) in log.claims(from)? {
-        storage::insert(&mut store, stored.signed.to_triples())?;
+        let content = instance.content_graph(stored.signed.envelope().claim().attribution());
+        storage::insert(&mut store, &stored.signed.to_quads(&content, &meta))?;
         // A claim written twice changes nothing, so the position may lag but never lead
         fs::write(position_file(instance), (offset + 1).to_string())?;
     }

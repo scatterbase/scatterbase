@@ -62,7 +62,7 @@ pub fn handle_triple_write_command(subject: &str, property: &str, object: &str, 
     };
 
     // Store the triple
-    let stored = storage::open(&storage_file).and_then(|mut store| storage::insert(&mut store, [triple.clone()]));
+    let stored = storage::open(&storage_file).and_then(|mut store| storage::insert_unclaimed(&mut store, [triple.clone()]));
     if let Err(e) = stored {
         eprintln!("Error storing triple: {}", e);
         return;

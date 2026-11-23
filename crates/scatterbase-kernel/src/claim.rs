@@ -127,7 +127,7 @@ pub fn prepare(
 pub fn submit(envelope: Envelope, instance: &Instance, server_key: &SigningKey) -> io::Result<SignedClaim> {
     let mut log = ClaimLog::open(&instance.log_dir, &instance.domain)?;
     projection::catch_up(instance, &log)?;
-    let store = Snapshot::load(&instance.storage_file)?;
+    let store = Snapshot::load(instance)?;
     let claim = envelope.claim();
     let attribution = claim.attribution();
     let offset = log.size()?;
@@ -215,6 +215,7 @@ mod tests {
     use scatter_claims::ClaimId;
     use std::io::Cursor;
 
+    use crate::instance::{GRAPH_CLAIM, GRAPH_META, GRAPH_SERVER};
     use crate::keys;
 
     fn iri(s: &str) -> NamedNode {
@@ -243,7 +244,7 @@ mod tests {
         }
 
         fn store(&self) -> Snapshot {
-            Snapshot::load(&self.instance.storage_file).unwrap()
+            Snapshot::load(&self.instance).unwrap()
         }
 
         fn log(&self) -> ClaimLog {
@@ -290,7 +291,7 @@ mod tests {
         let store = fixture.store();
         assert_eq!(store.public_key(fixture.server.as_ref()), Some(fixture.server_key.verifying_key()));
 
-        let signed = SignedClaim::from_triples(&store.triples()).unwrap();
+        let signed = SignedClaim::from_triples(&store.meta()).unwrap();
         assert_eq!(signed.envelope().claim().previous(), ClaimId::NONE);
         assert_eq!(signed.envelope().verify(&fixture.server_key.verifying_key()), Ok(()));
         assert_eq!(signed.verify(&fixture.server_key.verifying_key()), Ok(()));
@@ -347,6 +348,67 @@ mod tests {
         // Registering one's own key works only for the first claim of an empty store
         let error = fixture.claim(keys::registration(&mallory, &key.verifying_key()), &mallory, &key).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn claims_are_stored_in_three_graphs() {
+        let fixture = Fixture::new();
+        let alice = iri("http://example.org/alice");
+        let alice_key = fixture.register(&alice);
+        let signed = fixture.claim(vec![name("http://example.org/a", "A")], &alice, &alice_key).unwrap();
+        let store = fixture.store();
+        let graph = |name: &str| store.triples_in(&fixture.instance.graph(name));
+
+        // The server's claims, here two key registrations, and everyone else's
+        assert_eq!(graph(GRAPH_SERVER).len(), 8);
+        assert_eq!(graph(GRAPH_CLAIM), vec![name("http://example.org/a", "A")]);
+        // Everything about all three claims, and nothing outside the three graphs
+        assert_eq!(store.meta().len() + 8 + 1, store.quads().len());
+        assert_eq!(fixture.instance.graph(GRAPH_META).as_str(), "http://example.org/graph/meta");
+        assert!(store.meta().contains(&Triple::new(signed.id().iri(), scatter_vocab::prov::WAS_ATTRIBUTED_TO, alice.clone())));
+    }
+
+    #[test]
+    fn what_an_actor_claims_is_not_taken_for_a_key_or_for_bookkeeping() {
+        let fixture = Fixture::new();
+        let alice = iri("http://example.org/alice");
+        let mallory = iri("http://example.org/mallory");
+        let alice_key = fixture.register(&alice);
+        let mallory_key = fixture.register(&mallory);
+        let by_alice = fixture.claim(vec![name("http://example.org/a", "A")], &alice, &alice_key).unwrap();
+
+        // Mallory claims that her key is Alice's, that Alice's claim came later than it
+        // did, and that a claim of Alice's exists that does not
+        let forged = scatter_claims::ClaimId::from_bytes([9; 32]);
+        let mut triples = keys::registration(&alice, &mallory_key.verifying_key());
+        triples.push(Triple::new(by_alice.id().iri(), scatter_vocab::scatter::SEQ_ID, Literal::new_simple_literal("999999")));
+        triples.push(Triple::new(forged.iri(), scatter_vocab::prov::WAS_ATTRIBUTED_TO, alice.clone()));
+        triples.push(Triple::new(forged.iri(), scatter_vocab::scatter::SEQ_ID, Literal::new_simple_literal("999998")));
+        let by_mallory = fixture.claim(triples, &mallory, &mallory_key).unwrap();
+
+        let store = fixture.store();
+        assert_eq!(store.public_key(alice.as_ref()), Some(alice_key.verifying_key()));
+        assert_eq!(store.sequence_id(by_alice.id()), Some(3));
+        assert_eq!(store.latest_claim_by(alice.as_ref()), by_alice.id());
+        assert!(!store.contains_claim(forged));
+        assert_eq!(store.latest_claim_using(alice.as_ref()), by_mallory.id());
+
+        // Alice's key still signs for Alice, and Mallory's does not
+        assert!(fixture.claim(vec![name("http://example.org/b", "B")], &alice, &mallory_key).is_err());
+        fixture.claim(vec![name("http://example.org/b", "B")], &alice, &alice_key).unwrap();
+    }
+
+    #[test]
+    fn claiming_an_old_registration_again_does_not_bring_the_key_back() {
+        let fixture = Fixture::new();
+        let alice = iri("http://example.org/alice");
+        let mallory = iri("http://example.org/mallory");
+        let old = fixture.register(&alice);
+        let new = fixture.register(&alice);
+        let mallory_key = fixture.register(&mallory);
+
+        fixture.claim(keys::registration(&alice, &old.verifying_key()), &mallory, &mallory_key).unwrap();
+        assert_eq!(fixture.store().public_key(alice.as_ref()), Some(new.verifying_key()));
     }
 
     #[test]

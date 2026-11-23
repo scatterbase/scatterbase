@@ -137,7 +137,7 @@ scatter_claim:{C} scatter:serverSignature "ed25519:{signature}" .
 
 In Turtle the envelope is written one triple per line: the claim's triples in order, then the triples about them in order, then the actor's signature, then the server's triples with the server's signature last.
 
-**Reading an envelope back.** The claim's triples are taken from the reification of every `scatter_triple:{T}` claimed in `C`, each checked against its triple hash; the claim ID is then recomputed and must equal `C`. A set of triples that reads back is therefore the envelope that was written, and the signatures can be checked against it.
+**Reading an envelope back.** Only the triples about the claim are needed, which in the store are the `meta` graph. The claim's triples are taken from the reification of every `scatter_triple:{T}` claimed in `C`, each checked against its triple hash; the claim ID is then recomputed and must equal `C`. A set of triples that reads back is therefore the envelope that was written, and the signatures can be checked against it.
 
 ## The claim log
 
@@ -153,7 +153,23 @@ A claim is one record of payload type `scatter:v0/claim`. Its header key is the 
 | 3 | The server signature | `{"alg": "ed25519", "key": bytes(32), "sig": bytes(64), "sequence": text, "timestamp": text}` |
 | 4 | The acknowledgments | `[[text, bytes(32)], …]`: term IRI and prior claim ID, in order of the IRI |
 
-The storage file is derived from the log: it is a `scatter-quadstore` N-Quads file holding the RDF form of every claim, below, in the default graph, which makes it N-Triples as well. `scatterbase log rebuild` writes it again from the log. Lookups (the latest claim using a term, an actor's latest claim, an actor's key) are pattern lookups over it.
+## The store and its graphs
+
+The storage file is derived from the log: it is a `scatter-quadstore` N-Quads file holding the RDF form of every claim, below, and `scatterbase log rebuild` writes it again from the log. A claim is written into two of the instance's named graphs, whose IRIs are `{domain}/graph/{name}`:
+
+| Graph | Holds |
+|---|---|
+| `claim` | The triples of every claim by an actor other than the server |
+| `server` | The triples of every claim by the server: registered keys and the domain |
+| `meta` | Everything recorded about each claim: its reification, attribution, chain, acknowledgments, signatures, sequence ID, time and type |
+| the default graph | Triples written outside any claim, by `scatterbase triple write` and `scatterbase domain init` |
+
+Only accepted claims are written to the three named graphs, and the server's lookups read `meta` and `server` alone:
+
+- the latest claim using a term, an actor's latest claim and a claim's sequence ID are read from `meta`;
+- an actor's key is the one registered in `server` by the latest of the *server's* claims holding the registration.
+
+So nothing an actor claims is taken for a registered key or for what the server recorded about a claim, whatever its triples say. A claim that says `<alice> scatter:hasPublicKey <urn:ed25519:…>` or `scatter_claim:{C} scatter:seqID "999999"` is stored, in `claim`, as what its actor asserted and nothing more. The `meta` graph alone is enough to read every claim back, since it holds each claimed triple's reification.
 
 ## IRI reference
 

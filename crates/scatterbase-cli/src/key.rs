@@ -44,7 +44,7 @@ pub fn handle_key_add_command(args: &[String], env_path: &str) -> io::Result<()>
         .ok_or_else(|| invalid("Attribution URI is required. Use --attribution to specify.".to_string()))?;
 
     // Check if the attribution URI already has a key
-    let store = Snapshot::load(&config.storage_file)?;
+    let store = Snapshot::load(&config.instance())?;
     if store.public_key(attribution.as_ref()).is_some() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,

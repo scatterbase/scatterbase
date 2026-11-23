@@ -102,7 +102,7 @@ pub fn handle_domain_init_command(env_path: &str, uri_param: Option<&str>) {
             }
 
             // Append the triple to the storage file
-            let stored = storage::open(file_path).and_then(|mut store| storage::insert(&mut store, [triple.clone()]));
+            let stored = storage::open(file_path).and_then(|mut store| storage::insert_unclaimed(&mut store, [triple.clone()]));
             if let Err(e) = stored {
                 println!("Error appending to storage file: {}", e);
                 return;

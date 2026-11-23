@@ -75,7 +75,7 @@ fn prepare_from_input(args: &[String], config: &Config) -> Result<(Envelope, Str
     }
 
     let key = config.signing_key_for(&attribution, options.private_key.as_deref()).map_err(|e| e.to_string())?;
-    let store = Snapshot::load(&config.storage_file).map_err(|e| format!("Error reading storage: {}", e))?;
+    let store = Snapshot::load(&config.instance()).map_err(|e| format!("Error reading storage: {}", e))?;
     let envelope = prepare(parsed, attribution, &domain, &store, &key)
         .map_err(|e| format!("Error preparing claim: {}", e))?;
     Ok((envelope, domain))
