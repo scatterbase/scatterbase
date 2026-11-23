@@ -33,16 +33,14 @@ pub fn read_prefixes() -> HashMap<String, String> {
     let reader = BufReader::new(file);
 
     // Parse each line for prefixes
-    for line in reader.lines() {
-        if let Ok(line) = line {
-            if line.starts_with("@prefix") {
-                // Parse the prefix line
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 4 {
-                    let prefix = parts[1].trim_end_matches(':');
-                    let uri = parts[2].trim_start_matches('<').trim_end_matches('>');
-                    prefixes.insert(prefix.to_string(), uri.to_string());
-                }
+    for line in reader.lines().map_while(Result::ok) {
+        if line.starts_with("@prefix") {
+            // Parse the prefix line
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 4 {
+                let prefix = parts[1].trim_end_matches(':');
+                let uri = parts[2].trim_start_matches('<').trim_end_matches('>');
+                prefixes.insert(prefix.to_string(), uri.to_string());
             }
         }
     }
@@ -97,7 +95,7 @@ pub fn init_prefix_file() -> io::Result<()> {
     writeln!(file, "@prefix xsd: <{}> .", xsd::NS)?;
     writeln!(file, "@prefix owl: <{}> .", owl::NS)?;
     writeln!(file, "@prefix foaf: <{}> .", foaf::NS)?;
-    writeln!(file, "@prefix dc: <{}> .", "http://purl.org/dc/elements/1.1/")?;
+    writeln!(file, "@prefix dc: <http://purl.org/dc/elements/1.1/> .")?;
 
     println!("Initialized prefix file with standard RDF prefixes: {}", prefix_file);
 

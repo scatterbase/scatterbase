@@ -4,7 +4,6 @@
 
 use std::env;
 use std::fs;
-use dotenv;
 
 /// Handles the "purge" command
 pub fn handle_purge_command(env_path: &str) {

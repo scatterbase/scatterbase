@@ -151,6 +151,8 @@ In Turtle the envelope is written one triple per line: the claim's triples in or
 
 Everything an instance accepts is kept in an append-only log, which is its source of truth. The log is a `scatter-log` file store with three partitions. Each keeps every record header, and after each append the server signs a checkpoint of the partition's Merkle tree head, under the origin `{host}/log/{name}`, so a copy of the log can be shown to be complete and in order. `scatterbase log verify` checks the key chain, the checkpoints, every record, every signature and that every erased part is accounted for.
 
+**One writer at a time.** A process holds a lock on the log's directory for as long as it has the log open, and everything that reads the log to decide what to append, appends, signs the checkpoint and brings the store up to the log does so with the log open. So two commands never interleave: the second waits for the first, for up to half a minute. `scatterbase claim write` prepares and accepts its claim under one hold of the lock, so claims written at once are all accepted, one after another, each following the one before. An envelope prepared separately with `scatterbase claim prepare` is checked when it is submitted, and refused if another claim got in first.
+
 ### The server partition
 
 Partition 0 founds and describes the instance. It holds `scatter:v0/config` records, as a `config` partition does in Triplespace, and `scatterbase init` writes the first of them:

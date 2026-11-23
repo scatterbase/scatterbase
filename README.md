@@ -26,6 +26,16 @@ cargo build --release
 
 The binary will be available at `target/release/scatterbase`.
 
+## Development
+
+```bash
+cargo build --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+CI runs these three on every pull request and on `main`. The shared `scatter-*` crates are taken from the triplespace repository at a commit pinned in `Cargo.toml`, and need Rust 1.95 or later.
+
 ## Repository Layout
 
 The repository is a Cargo workspace:

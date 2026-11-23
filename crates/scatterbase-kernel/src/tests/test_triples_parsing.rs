@@ -102,27 +102,24 @@ fn test_parse_triples() {
                 if object.to_string() == "<http://dbpedia.org/resource/Princeton,_New_Jersey>" {
                     found_einstein_deathplace = true;
                 }
-            } else if property == "http://xmlns.com/foaf/0.1/homepage" {
-                if object.to_string() == "<https://einstein-archives.org/>" {
+            } else if property == "http://xmlns.com/foaf/0.1/homepage"
+                && object.to_string() == "<https://einstein-archives.org/>" {
                     found_einstein_homepage = true;
                 }
-            }
         } else if subject == "<http://dbpedia.org/resource/Berlin>" {
             if property == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type" {
                 if object.to_string() == "<http://schema.org/City>" {
                     found_berlin_city = true;
                 }
-            } else if property == "http://schema.org/country" {
-                if object.to_string() == "<http://dbpedia.org/resource/Germany>" {
+            } else if property == "http://schema.org/country"
+                && object.to_string() == "<http://dbpedia.org/resource/Germany>" {
                     found_berlin_country = true;
                 }
-            }
         } else if subject == "<http://dbpedia.org/resource/Germany>" {
-            if property == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type" {
-                if object.to_string() == "<http://schema.org/Country>" {
+            if property == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
+                && object.to_string() == "<http://schema.org/Country>" {
                     found_germany_country = true;
                 }
-            }
         } else if subject == "<http://dbpedia.org/resource/Wikipedia>" {
             if property == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type" {
                 if object.to_string() == "<http://schema.org/CreativeWork>" {
@@ -134,11 +131,10 @@ fn test_parse_triples() {
                         found_wikipedia_language = true;
                     }
                 }
-            } else if property == "http://schema.org/url" {
-                if object.to_string() == "<https://en.wikipedia.org/wiki/Main_Page>" {
+            } else if property == "http://schema.org/url"
+                && object.to_string() == "<https://en.wikipedia.org/wiki/Main_Page>" {
                     found_wikipedia_url = true;
                 }
-            }
         }
     }
 

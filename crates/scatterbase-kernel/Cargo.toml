@@ -3,6 +3,7 @@ name = "scatterbase-kernel"
 description = "The Scatterbase kernel: RDF terms and triples, signed claim envelopes, keys and storage"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

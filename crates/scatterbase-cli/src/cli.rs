@@ -298,11 +298,6 @@ pub fn prompt_for_server_uri(domain: &str) -> String {
     prompt_user("Enter server URI", Some(&default_uri), true)
 }
 
-/// Prompts for a prefix file path
-pub fn prompt_for_prefix_file() -> String {
-    prompt_user("Enter prefix file path", Some(DEFAULT_PREFIX_FILE), true)
-}
-
 /// Prompts for a key file path
 pub fn prompt_for_key_file() -> String {
     prompt_user("Enter private key file path", Some(DEFAULT_PRIVATE_KEY_FILE), true)

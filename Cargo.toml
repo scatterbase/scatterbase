@@ -11,6 +11,8 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
+# The shared scatter crates need 1.95
+rust-version = "1.95"
 repository = "https://github.com/scatterbase/scatterbase"
 
 [workspace.dependencies]

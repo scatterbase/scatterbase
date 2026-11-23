@@ -35,8 +35,8 @@ pub fn create_env_file(env_file: &str, domain: &str, storage_file: &str, server_
 
     // Write public key to separate file
     let public_key_file = DEFAULT_PUBLIC_KEY_FILE;
-    ensure_directory_exists(&public_key_file)?;
-    let mut public_key_file_handle = File::create(&public_key_file)?;
+    ensure_directory_exists(public_key_file)?;
+    let mut public_key_file_handle = File::create(public_key_file)?;
     public_key_file_handle.write_all(public_key_b32z.as_bytes())?;
     println!("Public key stored in {}", public_key_file);
 
@@ -77,7 +77,7 @@ pub fn handle_domain_init_command(env_path: &str, uri_param: Option<&str>) {
         return;
     }
 
-    match write_claim(&config, vec![create_initial_triple(&domain)], config.server.clone(), None) {
+    match write_claim(&config, vec![create_initial_triple(&domain)], config.server.clone(), &config.domain, None) {
         Ok(signed) => {
             println!("Domain initialized with a claim by the server:");
             for triple in signed.envelope().claim().triples() {

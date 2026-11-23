@@ -126,7 +126,31 @@ pub fn prepare(
 /// sequence ID, and the store is brought up to the log.
 pub fn submit(envelope: Envelope, instance: &Instance, server_key: &SigningKey) -> io::Result<SignedClaim> {
     let mut log = ClaimLog::open(instance)?;
+    accept(envelope, instance, &mut log, server_key)
+}
+
+/// Prepares a claim of parsed triples and accepts it, in one step with the log held open:
+/// [`prepare`] and then [`submit`], with no other claim accepted in between. So a claim
+/// written this way is never refused as prepared against an older state of the store,
+/// however many are written at once.
+pub fn write(
+    parsed: Vec<Triple>,
+    attribution: NamedNode,
+    domain: &str,
+    instance: &Instance,
+    key: &SigningKey,
+    server_key: &SigningKey,
+) -> io::Result<SignedClaim> {
+    let mut log = ClaimLog::open(instance)?;
     projection::catch_up(instance, &log)?;
+    let envelope = prepare(parsed, attribution, domain, &Snapshot::load(instance)?, key)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    accept(envelope, instance, &mut log, server_key)
+}
+
+/// Accepts an envelope into a log that is open, and so locked.
+fn accept(envelope: Envelope, instance: &Instance, log: &mut ClaimLog, server_key: &SigningKey) -> io::Result<SignedClaim> {
+    projection::catch_up(instance, log)?;
     let store = Snapshot::load(instance)?;
     let claim = envelope.claim();
     let attribution = claim.attribution();
@@ -181,7 +205,7 @@ pub fn submit(envelope: Envelope, instance: &Instance, server_key: &SigningKey) 
     ).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     log.append(&signed, &key, server_key)?;
-    projection::catch_up(instance, &log)?;
+    projection::catch_up(instance, log)?;
     Ok(signed)
 }
 
@@ -773,6 +797,35 @@ mod tests {
         std::fs::write(&segment, bytes).unwrap();
         let changed = ClaimLog::open_bundle(&public).and_then(|bundle| bundle.verify(&new.verifying_key()));
         assert!(changed.is_err());
+    }
+
+    #[test]
+    fn claims_written_at_once_are_all_accepted_one_after_another() {
+        let fixture = Fixture::new();
+        let alice = iri("http://example.org/alice");
+        let alice_key = fixture.register(&alice);
+
+        // Eight writers, all about the same term, so that each must follow the one before
+        let writers: Vec<_> = (0..8).map(|n| {
+            let (instance, alice, alice_key, server_key) = (fixture.instance.clone(), alice.clone(), alice_key.clone(), fixture.server_key.clone());
+            std::thread::spawn(move || {
+                write(vec![name("http://example.org/a", &format!("A{n}"))], alice, DOMAIN, &instance, &alice_key, &server_key).unwrap()
+            })
+        }).collect();
+        let written: Vec<SignedClaim> = writers.into_iter().map(|writer| writer.join().unwrap()).collect();
+
+        // One chain, each claim following and acknowledging the one accepted before it
+        let claims = fixture.log().claims(0).unwrap();
+        assert_eq!(claims.len(), 8);
+        let mut previous = ClaimId::NONE;
+        for stored in &claims {
+            let signed = stored.signed().unwrap();
+            assert!(written.contains(&signed));
+            assert_eq!(signed.envelope().claim().previous(), previous);
+            assert_eq!(signed.envelope().acknowledgments()[&iri("http://example.org/a")], previous);
+            previous = signed.id();
+        }
+        assert_eq!(fixture.log().verify(&fixture.server_key.verifying_key()).unwrap(), 8);
     }
 
     #[test]

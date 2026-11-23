@@ -5,7 +5,7 @@ use std::io::{self, Cursor, Read};
 
 use oxrdf::{NamedNode, Triple};
 use scatter_claims::{ClaimId, Envelope, SignedClaim};
-use scatterbase_kernel::claim::{erase_claim, parse_turtle, prepare, read_triples_from_file, read_triples_from_stdin, submit};
+use scatterbase_kernel::claim::{erase_claim, parse_turtle, prepare, read_triples_from_file, read_triples_from_stdin, submit, write};
 use scatterbase_kernel::log::{ClaimPart, Reason, REASON_CLASSES};
 use scatterbase_kernel::lookup::Snapshot;
 use scatterbase_kernel::prefix::read_prefixes;
@@ -90,16 +90,20 @@ pub fn prepare_claim(config: &Config, parsed: Vec<Triple>, attribution: NamedNod
     prepare(parsed, attribution, domain, &store, &key).map_err(|e| format!("Error preparing claim: {}", e))
 }
 
-/// Prepares and submits a claim of parsed triples by an actor, as `claim write` does.
-pub fn write_claim(config: &Config, parsed: Vec<Triple>, attribution: NamedNode, key_file: Option<&str>) -> Result<SignedClaim, String> {
-    let envelope = prepare_claim(config, parsed, attribution, &config.domain, key_file)?;
+/// Prepares and submits a claim of parsed triples by an actor, in one step.
+pub fn write_claim(config: &Config, parsed: Vec<Triple>, attribution: NamedNode, domain: &str, key_file: Option<&str>) -> Result<SignedClaim, String> {
+    if parsed.is_empty() {
+        return Err("No triples found in input.".to_string());
+    }
+    let key = config.signing_key_for(&attribution, key_file).map_err(|e| e.to_string())?;
     let server_key = config.server_key().map_err(|e| e.to_string())?;
-    submit(envelope, &config.instance(), &server_key).map_err(|e| format!("Claim rejected: {}", e))
+    write(parsed, attribution, domain, &config.instance(), &key, &server_key)
+        .map_err(|e| format!("Claim rejected: {}", e))
 }
 
-/// Reads the input triples and prepares the envelope, as `claim prepare` and `claim write`
-/// both do.
-fn prepare_from_input(args: &[String], config: &Config) -> Result<Envelope, String> {
+/// The triples and options a claim is made from, as `claim prepare` and `claim write` both
+/// read them: the triples, who claims them, the domain and the key file if one is named.
+fn read_input(args: &[String], config: &Config) -> Result<(Vec<Triple>, NamedNode, String, Option<String>), String> {
     let options = Options::parse(args, 3, &["--attribution", "--file", "--domain", "--private-key"])?;
     let attribution = options.required_attribution()?;
     let domain = options.domain.clone().unwrap_or_else(|| config.domain.clone());
@@ -111,7 +115,7 @@ fn prepare_from_input(args: &[String], config: &Config) -> Result<Envelope, Stri
         None => read_triples_from_stdin(&prefixes)
             .map_err(|e| format!("Error reading triples from stdin: {}", e))?,
     };
-    prepare_claim(config, parsed, attribution, &domain, options.private_key.as_deref())
+    Ok((parsed, attribution, domain, options.private_key))
 }
 
 pub fn print_accepted(signed: &SignedClaim) {
@@ -126,7 +130,10 @@ pub fn print_accepted(signed: &SignedClaim) {
 /// and returns all the triples of the ClaimEnvelope in TTL form to stdout.
 /// The claim is made as the actor named by --attribution.
 pub fn handle_claim_prepare_command(args: &[String], env_path: &str) {
-    let prepared = Config::load(env_path).and_then(|config| prepare_from_input(args, &config));
+    let prepared = Config::load(env_path).and_then(|config| {
+        let (parsed, attribution, domain, key_file) = read_input(args, &config)?;
+        prepare_claim(&config, parsed, attribution, &domain, key_file.as_deref())
+    });
     match prepared {
         Ok(envelope) => print!("{}", envelope.to_turtle()),
         Err(e) => eprintln!("{}", e),
@@ -170,10 +177,8 @@ pub fn handle_claim_submit_command(args: &[String], env_path: &str) {
 /// The claim is made as the actor named by --attribution.
 pub fn handle_claim_write_command(args: &[String], env_path: &str) {
     let written = Config::load(env_path).and_then(|config| {
-        let envelope = prepare_from_input(args, &config)?;
-        let server_key = config.server_key().map_err(|e| e.to_string())?;
-        submit(envelope, &config.instance(), &server_key)
-            .map_err(|e| format!("Claim rejected: {}", e))
+        let (parsed, attribution, domain, key_file) = read_input(args, &config)?;
+        write_claim(&config, parsed, attribution, &domain, key_file.as_deref())
     });
     match written {
         Ok(signed) => {

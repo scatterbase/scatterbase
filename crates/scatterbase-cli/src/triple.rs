@@ -22,7 +22,7 @@ pub fn handle_triple_write_command(args: &[String], env_path: &str) {
             let object = NamedNode::new(object.as_str()).map_err(|e| format!("Invalid object URI: {}", e))?;
             Triple::new(subject, property, object)
         };
-        write_claim(&config, vec![triple], attribution, options.private_key.as_deref())
+        write_claim(&config, vec![triple], attribution, &config.domain, options.private_key.as_deref())
     });
     match written {
         Ok(signed) => {

@@ -198,14 +198,14 @@ pub(crate) mod tests {
 
         // A delta deletes, then inserts
         let added = quad("http://example.org/c", "http://schema.org/knows", iri("http://example.org/a"));
-        store.apply(&[quads[1].clone(), quads[4].clone()], &[added.clone()]).unwrap();
+        store.apply(&[quads[1].clone(), quads[4].clone()], std::slice::from_ref(&added)).unwrap();
         assert_eq!(store.len().unwrap(), 4);
         assert!(!store.contains(&quads[1]).unwrap());
         assert_eq!(store.lookup(&Pattern::any().subject(a)).unwrap(), [quads[0].clone()]);
         assert_eq!(store.lookup(&Pattern::any().object(a)).unwrap(), [quads[3].clone(), added.clone()]);
 
         // A quad in both lists is held afterwards, and a deleted quad can come back
-        store.apply(&[added.clone()], &[added.clone(), quads[1].clone()]).unwrap();
+        store.apply(std::slice::from_ref(&added), &[added.clone(), quads[1].clone()]).unwrap();
         assert!(store.contains(&added).unwrap());
         assert_eq!(store.lookup(&Pattern::any().predicate(knows)).unwrap().len(), 3);
     }

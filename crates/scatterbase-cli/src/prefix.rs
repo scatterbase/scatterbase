@@ -9,7 +9,6 @@ use dotenv::dotenv;
 use scatter_vocab::rdf;
 use scatterbase_kernel::utils::ensure_directory_exists;
 use scatterbase_kernel::constants::DEFAULT_PREFIX_FILE;
-use crate::cli::prompt_user;
 
 /// Handles the "prefix add" command
 pub fn handle_prefix_add_command(prefix: &str, uri: &str) {
@@ -30,7 +29,7 @@ pub fn handle_prefix_add_command(prefix: &str, uri: &str) {
 
     // Open the file for writing (create if it doesn't exist)
     let mut file = match fs::OpenOptions::new()
-        .write(true)
+        
         .create(true)
         .append(true)
         .open(&prefix_file) {
@@ -57,9 +56,4 @@ pub fn handle_prefix_add_command(prefix: &str, uri: &str) {
 
     println!("Added prefix '{}' for URI '{}'", prefix, uri);
     println!("Prefixes stored in: {}", prefix_file);
-}
-
-/// Prompts for a prefix with an optional default
-pub fn prompt_for_prefix(default: Option<&str>) -> String {
-    prompt_user("Enter prefix (e.g., schema)", default, true)
 }

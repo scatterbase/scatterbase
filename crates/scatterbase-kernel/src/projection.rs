@@ -59,7 +59,10 @@ pub fn catch_up(instance: &Instance, log: &ClaimLog) -> io::Result<u64> {
             storage::insert(&mut store, &stored.claim.to_quads(&content, &meta))?;
         }
         // A claim written twice changes nothing, so the position may lag but never lead
-        fs::write(position_file(instance), size.to_string())?;
+        // Written whole or not at all: beside the file, then in its place
+        let next = position_file(instance).with_extension("offset.next");
+        fs::write(&next, size.to_string())?;
+        fs::rename(&next, position_file(instance))?;
     }
     project_keys(instance, log, &mut store)?;
     Ok(size)

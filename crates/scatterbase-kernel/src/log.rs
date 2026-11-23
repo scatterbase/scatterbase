@@ -81,8 +81,11 @@
 //! the server. [`ClaimLog::verify`] accepts a missing part only where such a record covers
 //! it.
 
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io;
 use std::path::Path;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use oxrdf::{NamedNode, Triple};
@@ -241,6 +244,38 @@ pub struct ClaimLog {
     authority: Authority,
     /// The instance's domain, which a bundle does not say.
     domain: Option<String>,
+    /// The lock on the log's directory, held for as long as the log is open. A bundle,
+    /// which is only read, has none.
+    _lock: Option<File>,
+}
+
+/// The name of the lock file in a log directory.
+const LOCK_FILE: &str = "lock";
+/// How long opening a log waits for another process to be done with it.
+const LOCK_WAIT: Duration = Duration::from_secs(30);
+
+/// Takes the lock on a log directory, waiting for whoever holds it to let go.
+///
+/// One process has an instance's log open at a time. Everything that reads the log to
+/// decide what to append, appends, signs the checkpoint and brings the store up to the log
+/// does so with the log open, so two commands never interleave: the second waits for the
+/// first. The lock is the operating system's, on the open file, so it is let go when the
+/// process ends however it ends.
+fn lock(dir: &Path) -> io::Result<File> {
+    fs::create_dir_all(dir)?;
+    let file = OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(LOCK_FILE))?;
+    let started = Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::WouldBlock) if started.elapsed() < LOCK_WAIT => thread::sleep(Duration::from_millis(20)),
+            Err(TryLockError::WouldBlock) => return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("{} is in use by another process", dir.display()),
+            )),
+            Err(TryLockError::Error(e)) => return Err(e),
+        }
+    }
 }
 
 fn other(e: impl std::fmt::Display) -> io::Error {
@@ -322,6 +357,14 @@ impl ClaimLog {
     /// Creates the instance's log in its empty log directory: the server partition with its
     /// founding record and graph registry, and an empty claim partition.
     pub fn create(instance: &Instance, server_key: &SigningKey) -> io::Result<Self> {
+        // A directory that holds a log already is refused at once, whoever has it open
+        if instance.log_dir.join(format!("{SERVER_PARTITION:016x}")).exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} already holds a log", instance.log_dir.display()),
+            ));
+        }
+        let lock = lock(&instance.log_dir)?;
         let mut store = SegmentStore::open(&instance.log_dir).map_err(other)?;
         if !block_on(store.partitions()).map_err(other)?.is_empty() {
             return Err(io::Error::new(
@@ -395,12 +438,28 @@ impl ClaimLog {
         let server_origin = origin_of(instance, GRAPH_SERVER);
         let checkpoint = block_on(scatter_integrity::checkpoints::checkpoint(&store, SERVER_PARTITION, &server_origin, server_key)).map_err(other)?;
         block_on(checkpoints.put(SERVER_PARTITION, &checkpoint)).map_err(other)?;
-        drop(store);
-        Self::open(instance)
+        Self::load(
+            store,
+            &instance.log_dir,
+            &|name| Ok(origin_of(instance, name)),
+            Some(instance.server.clone()),
+            Some(instance.domain.clone()),
+            Some(lock),
+        )
     }
 
     /// Opens the instance's log, which [`ClaimLog::create`] made.
+    ///
+    /// The log is locked for as long as it is open: opening waits for any other process
+    /// that has it open, and gives up after half a minute.
     pub fn open(instance: &Instance) -> io::Result<Self> {
+        if !instance.log_dir.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{} holds no log. Run 'scatterbase init' first.", instance.log_dir.display()),
+            ));
+        }
+        let lock = lock(&instance.log_dir)?;
         let store = SegmentStore::open(&instance.log_dir).map_err(other)?;
         if !block_on(store.partitions()).map_err(other)?.contains(&SERVER_PARTITION) {
             return Err(io::Error::new(
@@ -414,6 +473,7 @@ impl ClaimLog {
             &|name| Ok(origin_of(instance, name)),
             Some(instance.server.clone()),
             Some(instance.domain.clone()),
+            Some(lock),
         )
     }
 
@@ -440,7 +500,7 @@ impl ClaimLog {
                 .map(|partition| partition.origin.clone())
                 .ok_or_else(|| invalid(format!("the bundle does not say the origin of its {name} partition")))
         };
-        Self::load(store, dir, &origin, None, None)
+        Self::load(store, dir, &origin, None, None, None)
     }
 
     /// Reads the server partition of a store and makes a log of it.
@@ -450,6 +510,7 @@ impl ClaimLog {
         origin: &dyn Fn(&str) -> io::Result<String>,
         server: Option<NamedNode>,
         domain: Option<String>,
+        lock: Option<File>,
     ) -> io::Result<Self> {
         let server_records = records(&store, SERVER_PARTITION)?;
         let chain = KeyChain::from_records(&server_records).map_err(invalid)?;
@@ -492,6 +553,7 @@ impl ClaimLog {
             chain,
             server,
             domain,
+            _lock: lock,
         })
     }
 
@@ -1301,7 +1363,7 @@ mod tests {
         assert_eq!(log.revoke_key(&alice, "no such key", &server_key).unwrap(), None);
         assert_eq!(log.revoke_key(&alice, &dropped.key_id, &server_key).unwrap(), Some(dropped.clone()));
         assert_eq!(log.revoke_key(&alice, &dropped.key_id, &server_key).unwrap(), None);
-        assert_eq!(log.current_keys(&alice).unwrap(), [kept.clone()]);
+        assert_eq!(log.current_keys(&alice).unwrap(), std::slice::from_ref(&kept));
 
         // A key that expires is valid until then, and one already expired is not registered
         let soon = Timestamp(now().as_micros() + 3_600_000_000);
@@ -1311,6 +1373,48 @@ mod tests {
         assert!(log.register_key_until(&alice, &keys::generate().verifying_key(), Some(Timestamp(1)), &server_key).is_err());
         assert_eq!(log.current_keys(&alice).unwrap().len(), 2);
         assert_eq!(log.verify(&server_key.verifying_key()).unwrap(), 0);
+    }
+
+    #[test]
+    fn one_process_has_the_log_open_at_a_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let instance = Instance::new("http://example.org", iri("http://example.org/Server"), dir.path().join("store.nq").to_str().unwrap());
+        let server_key = keys::generate();
+        let log = ClaimLog::create(&instance, &server_key).unwrap();
+
+        // While it is open, another opening waits: here, until this one is dropped
+        let waiter = {
+            let instance = instance.clone();
+            thread::spawn(move || {
+                let started = Instant::now();
+                ClaimLog::open(&instance).map(|_| started.elapsed())
+            })
+        };
+        thread::sleep(Duration::from_millis(300));
+        assert!(!waiter.is_finished());
+        drop(log);
+        assert!(waiter.join().unwrap().unwrap() >= Duration::from_millis(250));
+
+        // Writers that each open the log append one after another, none lost
+        let writers: Vec<_> = (0..8).map(|n| {
+            let (instance, server_key) = (instance.clone(), server_key.clone());
+            thread::spawn(move || {
+                let actor = iri(&format!("http://example.org/actor{n}"));
+                ClaimLog::open(&instance).unwrap().register_key(&actor, &keys::generate().verifying_key(), &server_key).unwrap();
+            })
+        }).collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let log = ClaimLog::open(&instance).unwrap();
+        let mut surrogates: Vec<u64> = log.surrogates().unwrap().into_iter().map(|(n, _)| n).collect();
+        surrogates.sort();
+        assert_eq!(surrogates, (1..=8).collect::<Vec<u64>>());
+        assert_eq!(log.verify(&server_key.verifying_key()).unwrap(), 0);
+
+        // A directory with no log in it is not one to wait on
+        let nowhere = Instance::new("http://example.org", iri("http://example.org/Server"), dir.path().join("none/store.nq").to_str().unwrap());
+        assert_eq!(ClaimLog::open(&nowhere).err().unwrap().kind(), io::ErrorKind::NotFound);
     }
 
     #[test]
