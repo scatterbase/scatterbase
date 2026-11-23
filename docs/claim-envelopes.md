@@ -1,10 +1,29 @@
-# Claim Envelopes
+# Specification: claims, the log and the store
 
-A **claim** is the unit of provenance in Scatterbase. Triples are not stored as bare data: they are claimed by an actor, and the claim records *who* asserts them, *what that actor had seen* when asserting them, and *when* a server accepted them. This document specifies the claim, its identifier, its signatures and its RDF form. The implementation is the `scatter-claims` crate; each preimage below is produced by exactly one function there.
+This document specifies what Scatterbase writes: what a claim is and how it is identified and signed, how keys are registered, what the log's records hold, what can be erased, what a bundle is, and how the store's graphs are laid out. It is the contract between an instance and anyone who verifies a copy of its log. For how to use the commands, see [commands.md](commands.md); for running an instance, [operations.md](operations.md).
+
+A **claim** is the unit of provenance in Scatterbase. Triples are not stored as bare data: they are claimed by an actor, and the claim records *who* asserts them, *what that actor had seen* when asserting them, and *when* a server accepted them.
+
+Claims, their identifiers, their signatures and their RDF form are implemented by the `scatter-claims` crate, and the log and the store by `scatterbase-kernel`. Each preimage below is produced by exactly one function.
+
+**Contents**
+
+1. [Overview](#overview)
+2. [Hashes](#hashes)
+3. [The claim](#the-claim)
+4. [Prior-use acknowledgments](#prior-use-acknowledgments)
+5. [Signatures](#signatures)
+6. [RDF form](#rdf-form)
+7. [Keys](#keys)
+8. [The log](#the-log)
+9. [The store and its graphs](#the-store-and-its-graphs)
+10. [Erasure](#erasure)
+11. [Bundles](#bundles)
+12. [IRI reference](#iri-reference)
 
 ## Overview
 
-A claim goes through two phases:
+A claim goes through two phases, which may be on two machines:
 
 1. **Envelope** (client side). The actor prepares a claim of a set of triples, acknowledges the prior use of each term, and signs. `scatterbase claim prepare` writes an envelope.
 2. **Signed claim** (server side). The server verifies the actor's signature against the actor's registered key, assigns a sequence ID and a timestamp, signs, and appends the result to the claim partition of the log. `scatterbase claim submit` does this; `scatterbase claim write` does both phases in one step and stores exactly the same triples. Every claim names its actor: there is no default.
@@ -84,27 +103,6 @@ The acceptance names the claim and the actor's signature by hashes alone, so it 
 
 The sequence ID is the claim's offset in the claim partition of the log, written in decimal. Sequence IDs only increase, and there is a gap wherever the partition holds the record of an erasure. The timestamp is the acceptance time in RFC 3339 with milliseconds, in UTC.
 
-## Keys
-
-A public key is named by `urn:ed25519:{key}`, the 32 bytes in z-base-32. Its **key ID** is the SHA-256 of the public key in z-base-32.
-
-**The server's key** is the last key of the chain in the log's server partition, which begins with the founding record, and a claim by the server is checked against it. `scatterbase key rotate` replaces it: the log records the new key in a `key:` record signed by the old one, and from then on only the new key attests records, signs checkpoints, accepts claims and claims as the server. What earlier keys signed still verifies, since every key of the chain is known to have been the server's. The old private key is overwritten.
-
-**An actor's keys** are registered by the server in the log's mutable partition, as `scatter-actors` key records (below). An actor may have several keys at once. A claim by an actor is accepted if its signature verifies against any key of the actor's that is registered, not revoked and valid at the time; a claim by an actor with no such key is refused. `scatterbase key add` registers a key, which with `--expires` is valid only until a given time. `scatterbase key revoke` revokes an actor's keys, or with `--key-id` one of them, and `scatterbase key list` shows what has become of each. A revoked key signs no more, and the claims it signed stay in the log and stay verifiable, since each claim record keeps the public key it was checked against.
-
-Nothing anyone claims registers a key. The keys actors have now are also written to the store, in the `mutable` graph, as:
-
-```turtle
-<{actor}> scatter:hasPublicKey <urn:ed25519:{key}> .
-<urn:ed25519:{key}> rdf:type scatter:PublicKey .
-<urn:ed25519:{key}> scatter:keyType scatter:ed25519 .
-<urn:ed25519:{key}> scatter:owner <{actor}> .
-```
-
-That graph is derived from the key records, and a key that is revoked or has expired leaves it. The same triples claimed by an actor, or by the server, are in the `claim` or `server` graph and are only what was claimed.
-
-Each actor has its own key. The server's private key is in the file the configuration names; `key add` writes an actor's new key to `actors/{hash}.ed25519.private` beside it, where `{hash}` is the SHA-256 of the actor's IRI in z-base-32.
-
 ## RDF form
 
 An envelope with claim ID `C` is these triples. `T` is a triple hash and `H` a term hash.
@@ -147,6 +145,27 @@ In Turtle the envelope is written one triple per line: the claim's triples in or
 
 **Reading an envelope back.** Only the triples about the claim are needed, which in the store are the `meta` graph. The claim's triples are taken from the reification of every `scatter_triple:{T}` claimed in `C`, each checked against its triple hash; the claim ID is then recomputed and must equal `C`. A set of triples that reads back is therefore the envelope that was written, and the signatures can be checked against it.
 
+## Keys
+
+A public key is named by `urn:ed25519:{key}`, the 32 bytes in z-base-32. Its **key ID** is the SHA-256 of the public key in z-base-32.
+
+**The server's key** is the last key of the chain in the log's server partition, which begins with the founding record, and a claim by the server is checked against it. `scatterbase key rotate` replaces it: the log records the new key in a `key:` record signed by the old one, and from then on only the new key attests records, signs checkpoints, accepts claims and claims as the server. What earlier keys signed still verifies, since every key of the chain is known to have been the server's. The old private key is overwritten.
+
+**An actor's keys** are registered by the server in the log's mutable partition, as `scatter-actors` key records (see The mutable partition). An actor may have several keys at once. A claim by an actor is accepted if its signature verifies against any key of the actor's that is registered, not revoked and valid at the time; a claim by an actor with no such key is refused. `scatterbase key add` registers a key, which with `--expires` is valid only until a given time. `scatterbase key revoke` revokes an actor's keys, or with `--key-id` one of them, and `scatterbase key list` shows what has become of each. A revoked key signs no more, and the claims it signed stay in the log and stay verifiable, since each claim record keeps the public key it was checked against.
+
+Nothing anyone claims registers a key. The keys actors have now are also written to the store, in the `mutable` graph, as:
+
+```turtle
+<{actor}> scatter:hasPublicKey <urn:ed25519:{key}> .
+<urn:ed25519:{key}> rdf:type scatter:PublicKey .
+<urn:ed25519:{key}> scatter:keyType scatter:ed25519 .
+<urn:ed25519:{key}> scatter:owner <{actor}> .
+```
+
+That graph is derived from the key records, and a key that is revoked or has expired leaves it. The same triples claimed by an actor, or by the server, are in the `claim` or `server` graph and are only what was claimed.
+
+Each actor has its own key. The server's private key is in the file the configuration names; `key add` writes an actor's new key to `actors/{hash}.ed25519.private` beside it, where `{hash}` is the SHA-256 of the actor's IRI in z-base-32.
+
 ## The log
 
 Everything an instance accepts is kept in an append-only log, which is its source of truth. The log is a `scatter-log` file store with three partitions. Each keeps every record header, and after each append the server signs a checkpoint of the partition's Merkle tree head, under the origin `{host}/log/{name}`, so a copy of the log can be shown to be complete and in order. `scatterbase log verify` checks the key chain, the checkpoints, every record, every signature and that every erased part is accounted for.
@@ -177,7 +196,7 @@ The mutable partition holds what can be taken back: who the actors are and the k
 {"kind": "federated", "status": "active", "raw": "{actor IRI}"}
 ```
 
-If that record is erased (see Erasure, below), only the number is left. The key records under the surrogate can no longer be tied to an IRI and count for nobody, and the IRI seen again is given a new surrogate.
+If that record is erased (see Erasure), only the number is left. The key records under the surrogate can no longer be tied to an IRI and count for nobody, and the IRI seen again is given a new surrogate.
 
 **Keys.** A key is registered by a record of payload type `scatter:v0/key`, whose header key is the actor's surrogate and whose content is a `scatter-actors` key record:
 
@@ -198,6 +217,21 @@ A claim is one record of payload type `scatter:v0/claim`. Its header key is the 
 | 2 | `attestation`: who claims, and their signature | `{"actor": text, "alg": "ed25519", "key": bytes(32), "sig": bytes(64)}`, `key` being the public key the signature verified against | yes |
 | 3 | `acknowledgments` | `[[text, bytes(32)], …]`: term IRI and prior claim ID, in order of the IRI | yes |
 | 4 | `acceptance`: the server's | `{"alg": "ed25519", "key": bytes(32), "sig": bytes(64), "client": text, "sequence": text, "timestamp": text}`, `client` being the digest of the actor's signature | never |
+
+## The store and its graphs
+
+The storage file is derived from the log: it is a `scatter-quadstore` N-Quads file holding the RDF form of every claim, and `scatterbase log rebuild` writes it again from the log. The instance's named graphs have IRIs `{domain}/graph/{name}`, and a claim is written into two of them:
+
+| Graph | Holds |
+|---|---|
+| `claim` | The triples of every claim by an actor other than the server |
+| `server` | The triples of every claim by the server, such as the declaration of the domain. (The records of the server *partition* are configuration and are not projected into it.) |
+| `meta` | Everything recorded about each claim: its reification, attribution, chain, acknowledgments, signatures, sequence ID, time and type |
+| `mutable` | The registration of each key an actor has now, derived from the key records of the mutable partition |
+
+Only what the log holds is written to the named graphs. The server's lookups read `meta` alone, for the latest claim using a term, an actor's latest claim and a claim's sequence ID, and keys are read from the log itself, never from the store.
+
+So nothing an actor claims is taken for a registered key or for what the server recorded about a claim, whatever its triples say. A claim that says `<alice> scatter:hasPublicKey <urn:ed25519:…>` or `scatter_claim:{C} scatter:seqID "999999"` is stored, in `claim`, as what its actor asserted and nothing more. The `meta` graph alone is enough to read every claim back, since it holds each claimed triple's reification.
 
 ## Erasure
 
@@ -237,21 +271,6 @@ A **bundle** is a copy of the log that verifies with nothing else: a directory h
 `scatterbase log verify --bundle <directory> --key urn:ed25519:{key}` verifies a bundle anywhere, with no instance: the same checks as `scatterbase log verify`, against the server key the reader trusts. Without `--key` the bundle is checked against the key its own chain ends in, which shows that it is consistent and leaves it to the reader to compare that key with one they trust. In a bundle for publication, where no key records are to be had, a claim's signature is checked against the key its record says it was accepted under, and not against a registration.
 
 Parts that were erased are erased in a bundle too, with the records of their erasure.
-
-## The store and its graphs
-
-The storage file is derived from the log: it is a `scatter-quadstore` N-Quads file holding the RDF form of every claim, below, and `scatterbase log rebuild` writes it again from the log. The instance's named graphs have IRIs `{domain}/graph/{name}`, and a claim is written into two of them:
-
-| Graph | Holds |
-|---|---|
-| `claim` | The triples of every claim by an actor other than the server |
-| `server` | The triples of every claim by the server, such as the declaration of the domain. (The records of the server *partition* are configuration and are not projected into it.) |
-| `meta` | Everything recorded about each claim: its reification, attribution, chain, acknowledgments, signatures, sequence ID, time and type |
-| `mutable` | The registration of each key an actor has now, derived from the key records of the mutable partition |
-
-Only what the log holds is written to the named graphs. The server's lookups read `meta` alone, for the latest claim using a term, an actor's latest claim and a claim's sequence ID, and keys are read from the log itself, never from the store.
-
-So nothing an actor claims is taken for a registered key or for what the server recorded about a claim, whatever its triples say. A claim that says `<alice> scatter:hasPublicKey <urn:ed25519:…>` or `scatter_claim:{C} scatter:seqID "999999"` is stored, in `claim`, as what its actor asserted and nothing more. The `meta` graph alone is enough to read every claim back, since it holds each claimed triple's reification.
 
 ## IRI reference
 

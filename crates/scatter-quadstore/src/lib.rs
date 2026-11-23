@@ -97,3 +97,8 @@ pub fn write_nquads<'a>(mut writer: impl Write, quads: impl IntoIterator<Item = 
     }
     Ok(())
 }
+
+/// The examples of the README, compiled and run as documentation tests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
