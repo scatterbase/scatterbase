@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/scatter-claims",
+    "crates/scatter-quadstore",
     "crates/scatterbase-kernel",
     "crates/scatterbase-cli",
 ]
@@ -14,6 +15,7 @@ repository = "https://github.com/scatterbase/scatterbase"
 
 [workspace.dependencies]
 scatter-claims = { path = "crates/scatter-claims" }
+scatter-quadstore = { path = "crates/scatter-quadstore" }
 scatterbase-kernel = { path = "crates/scatterbase-kernel" }
 
 rand = "0.8.5"

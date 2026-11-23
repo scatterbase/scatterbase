@@ -1,62 +1,60 @@
 //! Lookups over what the store holds.
 //!
-//! A [`Snapshot`] is the store's triples read once. Its lookups answer what accepting and
-//! preparing a claim need to know: which claim last used a term, which claim an actor made
-//! last, and which key an actor has registered. "Last" is by the sequence ID the server
-//! assigned.
+//! A [`Snapshot`] is the quad store read once into memory. Its lookups answer what
+//! accepting and preparing a claim need to know: which claim last used a term, which claim
+//! an actor made last, and which key an actor has registered. "Last" is by the sequence ID
+//! the server assigned. Each is a few pattern lookups over the store's indexes
+//! ([`scatter_quadstore::Pattern`]); they are the kernel's own access paths, built on the
+//! quad-store contract and not part of it.
 
-use std::fs::File;
-use std::io::{self, BufReader};
+use std::io;
 use std::path::Path;
 
 use ed25519_dalek::VerifyingKey;
-use oxrdf::{NamedNodeRef, NamedOrBlankNode, Term, Triple};
-use oxttl::NTriplesParser;
+use oxrdf::{NamedNodeRef, NamedOrBlankNode, Quad, Term, Triple};
 use scatter_claims::id::ACK_NS;
 use scatter_claims::{ClaimId, TripleHash};
-
-use crate::keys::public_key_from_iri;
+use scatter_quadstore::{MemoryStore, NQuadsFile, Pattern};
 use scatter_vocab::{prov, scatter};
 
-/// The triples of the store, as they were when it was read.
+use crate::keys::public_key_from_iri;
+
+/// The quads of the store, as they were when it was read.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
-    triples: Vec<Triple>,
+    quads: MemoryStore,
 }
 
 impl Snapshot {
-    /// Reads the store's N-Triples file. A file that does not exist is an empty store.
+    /// Reads the store's file. A file that does not exist is an empty store.
     pub fn load(storage_file: impl AsRef<Path>) -> io::Result<Self> {
-        let path = storage_file.as_ref();
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        let triples = NTriplesParser::new()
-            .for_reader(BufReader::new(File::open(path)?))
-            .collect::<Result<Vec<Triple>, _>>()
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Error reading {}: {}", path.display(), e)))?;
-        Ok(Self { triples })
+        Ok(Self { quads: NQuadsFile::open(storage_file.as_ref())?.into_quads() })
     }
 
-    /// A snapshot of the given triples.
-    pub fn of(triples: Vec<Triple>) -> Self {
-        Self { triples }
+    /// A snapshot of the given quads.
+    pub fn of(quads: MemoryStore) -> Self {
+        Self { quads }
     }
 
-    /// The triples.
-    pub fn triples(&self) -> &[Triple] {
-        &self.triples
+    /// The quads.
+    pub fn quads(&self) -> &MemoryStore {
+        &self.quads
+    }
+
+    /// The triples of the quads, whatever their graph.
+    pub fn triples(&self) -> Vec<Triple> {
+        self.quads.iter().cloned().map(Triple::from).collect()
     }
 
     /// Whether the store holds nothing.
     pub fn is_empty(&self) -> bool {
-        self.triples.is_empty()
+        self.quads.is_empty()
     }
 
     /// Whether the store holds the claim with this ID.
     pub fn contains_claim(&self, id: ClaimId) -> bool {
-        let claim = NamedOrBlankNode::from(id.iri());
-        self.triples.iter().any(|t| t.subject == claim)
+        let claim = id.iri();
+        !self.quads.matching(&Pattern::any().subject(&claim)).is_empty()
     }
 
     /// The claim that last used a term, or [`ClaimId::NONE`] if none has.
@@ -64,33 +62,28 @@ impl Snapshot {
     /// Every claim acknowledges each term it uses, so the claims that used a term are those
     /// with an acknowledgment of it.
     pub fn latest_claim_using(&self, term: NamedNodeRef<'_>) -> ClaimId {
-        let term = Term::from(term);
-        self.latest(self.triples.iter()
-            .filter(|t| t.predicate.as_ref() == scatter::TERM && t.object == term)
-            .filter_map(|t| acknowledging_claim(&t.subject)))
+        let acknowledgments = self.quads.matching(&Pattern::any().predicate(scatter::TERM).object(term));
+        self.latest(acknowledgments.iter().filter_map(|quad| acknowledging_claim(&quad.subject)))
     }
 
     /// The claim an actor made last, or [`ClaimId::NONE`] if it has made none.
     pub fn latest_claim_by(&self, actor: NamedNodeRef<'_>) -> ClaimId {
-        let actor = Term::from(actor);
-        self.latest(self.triples.iter()
-            .filter(|t| t.predicate.as_ref() == prov::WAS_ATTRIBUTED_TO && t.object == actor)
-            .filter_map(|t| claim_of(&t.subject)))
+        let attributions = self.quads.matching(&Pattern::any().predicate(prov::WAS_ATTRIBUTED_TO).object(actor));
+        self.latest(attributions.iter().filter_map(|quad| claim_of(&quad.subject)))
     }
 
     /// The public key an actor registered last, if it has registered one.
     pub fn public_key(&self, actor: NamedNodeRef<'_>) -> Option<VerifyingKey> {
-        let actor = NamedOrBlankNode::from(actor);
-        self.triples.iter()
-            .filter(|t| t.subject == actor && t.predicate.as_ref() == scatter::HAS_PUBLIC_KEY)
+        self.quads.matching(&Pattern::any().subject(actor).predicate(scatter::HAS_PUBLIC_KEY))
+            .into_iter()
             .filter_map(|registration| {
                 let Term::NamedNode(key_iri) = &registration.object else { return None };
                 let key = public_key_from_iri(key_iri.as_ref())?;
                 // The registration is as recent as the latest claim holding it
-                let triple_iri = NamedOrBlankNode::from(TripleHash::of(registration).iri());
-                let sequence = self.triples.iter()
-                    .filter(|t| t.subject == triple_iri && t.predicate.as_ref() == scatter::CLAIMED_IN)
-                    .filter_map(|t| match &t.object {
+                let triple_iri = TripleHash::of(&Triple::from(registration.clone())).iri();
+                let sequence = self.quads.matching(&Pattern::any().subject(&triple_iri).predicate(scatter::CLAIMED_IN))
+                    .iter()
+                    .filter_map(|quad| match &quad.object {
                         Term::NamedNode(claim) => ClaimId::from_iri(claim.as_ref()),
                         _ => None,
                     })
@@ -105,10 +98,10 @@ impl Snapshot {
     /// The sequence ID the server gave a claim, which is its offset in the claim log, if
     /// the store holds the claim.
     pub fn sequence_id(&self, claim: ClaimId) -> Option<u64> {
-        let claim = NamedOrBlankNode::from(claim.iri());
-        self.triples.iter()
-            .filter(|t| t.subject == claim && t.predicate.as_ref() == scatter::SEQ_ID)
-            .find_map(|t| match &t.object {
+        let claim = claim.iri();
+        self.quads.matching(&Pattern::any().subject(&claim).predicate(scatter::SEQ_ID))
+            .iter()
+            .find_map(|quad| match &quad.object {
                 Term::Literal(literal) => literal.value().parse().ok(),
                 _ => None,
             })
@@ -120,6 +113,12 @@ impl Snapshot {
             .filter_map(|claim| Some((self.sequence_id(claim)?, claim)))
             .max()
             .map_or(ClaimId::NONE, |(_, claim)| claim)
+    }
+}
+
+impl From<Vec<Quad>> for Snapshot {
+    fn from(quads: Vec<Quad>) -> Self {
+        Self::of(MemoryStore::from_quads(quads))
     }
 }
 

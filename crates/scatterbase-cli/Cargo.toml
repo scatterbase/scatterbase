@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 scatterbase-kernel.workspace = true
 scatter-claims.workspace = true
+scatter-quadstore.workspace = true
 oxrdf.workspace = true
 scatter-vocab.workspace = true
 dotenv.workspace = true

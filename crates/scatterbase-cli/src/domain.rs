@@ -9,7 +9,7 @@ use scatterbase_kernel::utils::ensure_directory_exists;
 use scatterbase_kernel::constants::{DEFAULT_PUBLIC_KEY_FILE, DEFAULT_PREFIX_FILE, DEFAULT_PRIVATE_KEY_FILE};
 use scatterbase_kernel::keys;
 use scatter_claims::id::zbase32;
-use scatterbase_kernel::storage::Storage;
+use scatterbase_kernel::storage;
 use scatterbase_kernel::triple::TripleExt;
 use scatterbase_kernel::domain::create_initial_triple;
 use crate::cli::{prompt_for_domain, prompt_for_key_file};
@@ -101,17 +101,9 @@ pub fn handle_domain_init_command(env_path: &str, uri_param: Option<&str>) {
                 return;
             }
 
-            // Use the storage module to append the triple
-            let mut storage = scatterbase_kernel::storage::NtFileStorage::new(file_path);
-
-            // Initialize storage if needed
-            if let Err(e) = storage.init(&domain) {
-                println!("Error initializing storage: {}", e);
-                return;
-            }
-
             // Append the triple to the storage file
-            if let Err(e) = storage.append(&triple) {
+            let stored = storage::open(file_path).and_then(|mut store| storage::insert(&mut store, [triple.clone()]));
+            if let Err(e) = stored {
                 println!("Error appending to storage file: {}", e);
                 return;
             }

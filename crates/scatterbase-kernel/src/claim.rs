@@ -290,7 +290,7 @@ mod tests {
         let store = fixture.store();
         assert_eq!(store.public_key(fixture.server.as_ref()), Some(fixture.server_key.verifying_key()));
 
-        let signed = SignedClaim::from_triples(store.triples()).unwrap();
+        let signed = SignedClaim::from_triples(&store.triples()).unwrap();
         assert_eq!(signed.envelope().claim().previous(), ClaimId::NONE);
         assert_eq!(signed.envelope().verify(&fixture.server_key.verifying_key()), Ok(()));
         assert_eq!(signed.verify(&fixture.server_key.verifying_key()), Ok(()));

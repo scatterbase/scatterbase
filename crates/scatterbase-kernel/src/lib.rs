@@ -22,4 +22,4 @@ pub mod tests;
 pub use oxrdf::{Literal, NamedNode, Term, Triple};
 pub use instance::Instance;
 pub use triple::TripleExt;
-pub use storage::{Storage, NtFileStorage, generate_default_domain};
+pub use storage::generate_default_domain;

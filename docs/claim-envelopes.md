@@ -153,7 +153,7 @@ A claim is one record of payload type `scatter:v0/claim`. Its header key is the 
 | 3 | The server signature | `{"alg": "ed25519", "key": bytes(32), "sig": bytes(64), "sequence": text, "timestamp": text}` |
 | 4 | The acknowledgments | `[[text, bytes(32)], …]`: term IRI and prior claim ID, in order of the IRI |
 
-The N-Triples storage file is derived from the log: it holds the RDF form of every claim, below, and `scatterbase log rebuild` writes it again from the log. Lookups (the latest claim using a term, an actor's latest claim, an actor's key) read it.
+The storage file is derived from the log: it is a `scatter-quadstore` N-Quads file holding the RDF form of every claim, below, in the default graph, which makes it N-Triples as well. `scatterbase log rebuild` writes it again from the log. Lookups (the latest claim using a term, an actor's latest claim, an actor's key) are pattern lookups over it.
 
 ## IRI reference
 

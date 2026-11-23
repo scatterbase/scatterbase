@@ -7,8 +7,6 @@ mod test_literal_parsing;
 #[cfg(test)]
 mod test_literal;
 #[cfg(test)]
-mod test_nt_storage;
-#[cfg(test)]
 mod test_triples_parsing;
 #[cfg(test)]
 mod test_dataset_parsing;

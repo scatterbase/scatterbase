@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 scatter-claims.workspace = true
+scatter-quadstore.workspace = true
 scatter-log.workspace = true
 scatter-integrity.workspace = true
 pollster.workspace = true

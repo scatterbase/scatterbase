@@ -1,7 +1,7 @@
-//! The N-Triples store as a projection of the claim log.
+//! The quad store as a projection of the claim log.
 //!
-//! The store's file holds the triples of every claim in the log, in the RDF form of
-//! [`scatter_claims::rdf`]. It is derived: [`catch_up`] writes the claims the file does not
+//! The store ([`crate::storage`]) holds the triples of every claim in the log, in the RDF
+//! form of [`scatter_claims::rdf`]. It is derived: [`catch_up`] writes the claims the file does not
 //! hold yet, and [`rebuild`] writes it again from the first claim. How far the file has
 //! got is kept beside it, in `{storage file}.offset`, as the offset of the next claim to
 //! write.
@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use crate::instance::Instance;
 use crate::log::ClaimLog;
-use crate::storage::create_storage;
+use crate::storage;
 
 fn position_file(instance: &Instance) -> PathBuf {
     PathBuf::from(format!("{}.offset", instance.storage_file))
@@ -41,12 +41,9 @@ pub fn catch_up(instance: &Instance, log: &ClaimLog) -> io::Result<u64> {
         return Ok(size);
     }
 
-    let mut storage = create_storage(&instance.storage_file);
-    storage.init(&instance.domain)?;
+    let mut store = storage::open(&instance.storage_file)?;
     for (offset, stored) in log.claims(from)? {
-        for triple in stored.signed.to_triples() {
-            storage.append(&triple)?;
-        }
+        storage::insert(&mut store, stored.signed.to_triples())?;
         // A claim written twice changes nothing, so the position may lag but never lead
         fs::write(position_file(instance), (offset + 1).to_string())?;
     }

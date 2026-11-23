@@ -6,7 +6,7 @@ use oxrdf::NamedNode;
 use oxrdf::Literal;
 use oxrdf::Triple;
 use scatterbase_kernel::triple::TripleExt;
-use scatterbase_kernel::storage::{Storage, NtFileStorage};
+use scatterbase_kernel::storage;
 
 /// Handles the "triple write" command
 pub fn handle_triple_write_command(subject: &str, property: &str, object: &str, env_path: &str) {
@@ -61,11 +61,9 @@ pub fn handle_triple_write_command(subject: &str, property: &str, object: &str, 
         Triple::new(subject_uri, property_uri, object_uri)
     };
 
-    // Create a storage instance
-    let mut storage = NtFileStorage::new(&storage_file);
-
     // Store the triple
-    if let Err(e) = storage.append(&triple) {
+    let stored = storage::open(&storage_file).and_then(|mut store| storage::insert(&mut store, [triple.clone()]));
+    if let Err(e) = stored {
         eprintln!("Error storing triple: {}", e);
         return;
     }

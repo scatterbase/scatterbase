@@ -31,7 +31,8 @@ The binary will be available at `target/release/scatterbase`.
 The repository is a Cargo workspace:
 
 - `crates/scatter-claims` — what a claim is: claim IDs and their preimages, prior-use acknowledgments, client and server signatures, and the envelope's RDF form. Pure, with no I/O.
-- `crates/scatterbase-kernel` — the library: reading triples, preparing and accepting claims, the claim log (on `scatter-log` and `scatter-integrity`), the storage file derived from it, and keys.
+- `crates/scatter-quadstore` — the quad-store contract: lookup by pattern with wildcards and deltas of deleted and inserted quads, with an in-memory backend and an N-Quads file backend.
+- `crates/scatterbase-kernel` — the library: reading triples, preparing and accepting claims, the claim log (on `scatter-log` and `scatter-integrity`), the quad store derived from it (on `scatter-quadstore`), and keys.
 - `crates/scatterbase-cli` — the `scatterbase` binary: argument dispatch, prompts, help text and the command handlers.
 
 ## Usage

@@ -1,0 +1,16 @@
+[package]
+name = "scatter-quadstore"
+description = "The quad-store contract: lookup by pattern with wildcards, deltas of deleted and inserted quads, and its in-memory and N-Quads file backends"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+oxrdf.workspace = true
+oxttl.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

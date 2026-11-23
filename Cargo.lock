@@ -937,6 +937,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "scatter-quadstore"
+version = "0.0.1"
+dependencies = [
+ "oxrdf",
+ "oxttl",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "scatter-vocab"
 version = "0.1.1"
 source = "git+https://github.com/scatterbase/triplespace?rev=7839c357743fa2024bdb88bbff7dac4ae3e89f68#7839c357743fa2024bdb88bbff7dac4ae3e89f68"
@@ -954,6 +964,7 @@ dependencies = [
  "ed25519-dalek",
  "oxrdf",
  "scatter-claims",
+ "scatter-quadstore",
  "scatter-vocab",
  "scatterbase-kernel",
 ]
@@ -974,6 +985,7 @@ dependencies = [
  "scatter-claims",
  "scatter-integrity",
  "scatter-log",
+ "scatter-quadstore",
  "scatter-vocab",
  "sha2 0.10.9",
  "tempfile",
