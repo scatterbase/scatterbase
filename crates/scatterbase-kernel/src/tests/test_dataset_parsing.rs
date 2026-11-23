@@ -57,21 +57,19 @@ fn test_parse_dataset() {
                  subject, property, object);
 
         if subject == "<http://uwlcekqxsvwtoxzm.sandbox>" {
-            if property == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type" {
-                if object.to_string() == "<http://schema.org/Dataset>" {
+            if property == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
+                && object.to_string() == "<http://schema.org/Dataset>" {
                     found_dataset_type = true;
                 }
-            }
         } else if subject.contains("https://scatter.red/triple/") {
             if property == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type" {
                 if object.to_string() == "<https://scatter.red/terms/v0/Triple>" {
                     found_triple_type = true;
                 }
-            } else if property == "https://scatter.red/terms/v0/claimedIn" {
-                if object.to_string().contains("https://scatter.red/claim/") {
+            } else if property == "https://scatter.red/terms/v0/claimedIn"
+                && object.to_string().contains("https://scatter.red/claim/") {
                     found_triple_claimed_in = true;
                 }
-            }
         } else if subject.contains("https://scatter.red/claim/") {
             if property == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type" {
                 if object.to_string() == "<https://scatter.red/terms/v0/SignedClaim>" {
@@ -120,8 +118,8 @@ fn test_parse_dataset() {
                 } else if object.to_string() == "<http://schema.org/Dataset>" {
                     found_ack_term2 = true;
                 }
-            } else if property == "https://scatter.red/terms/v0/priorClaim" {
-                if object.to_string().contains("https://scatter.red/claim/yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy") {
+            } else if property == "https://scatter.red/terms/v0/priorClaim"
+                && object.to_string().contains("https://scatter.red/claim/yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy") {
                     // We need to track two different prior claims
                     if !found_ack_prior_claim1 {
                         found_ack_prior_claim1 = true;
@@ -129,7 +127,6 @@ fn test_parse_dataset() {
                         found_ack_prior_claim2 = true;
                     }
                 }
-            }
         }
     }
 

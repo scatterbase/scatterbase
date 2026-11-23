@@ -1,152 +1,161 @@
-//! The `claim` commands: prepare, submit and write.
+//! The `claim` and `triple` commands: making, submitting and erasing claims.
 
 use std::collections::HashMap;
 use std::io::{self, Cursor, Read};
 
-use oxrdf::NamedNode;
-use scatter_claims::{Envelope, SignedClaim};
-use scatterbase_kernel::claim::{parse_turtle, prepare, read_triples_from_file, read_triples_from_stdin, submit};
+use oxrdf::{Literal, NamedNode, Triple};
+use scatter_claims::{ClaimId, Envelope, SignedClaim};
+use scatterbase_kernel::claim::{erase_claim, parse_turtle, prepare, read_triples_from_file, read_triples_from_stdin, submit, write};
+use scatterbase_kernel::log::{ClaimPart, Reason};
 use scatterbase_kernel::lookup::Snapshot;
 use scatterbase_kernel::prefix::read_prefixes;
-use scatterbase_kernel::uri::parse_iri;
 
 use crate::config::Config;
+use crate::error::{Context, Result};
 
-/// The options of `claim prepare` and `claim write`.
-#[derive(Default)]
-struct Options {
-    attribution: Option<NamedNode>,
-    file: Option<String>,
-    domain: Option<String>,
-    private_key: Option<String>,
+/// What a claim is made from on the command line.
+#[derive(clap::Args)]
+pub struct Source {
+    /// Who makes the claim: an actor with a registered key, or the server's own URI
+    #[arg(short, long, value_parser = crate::iri)]
+    pub attribution: NamedNode,
+    /// The file of triples to claim, Turtle if it ends in .ttl and N-Triples otherwise [default: standard input, as Turtle]
+    #[arg(short, long)]
+    pub file: Option<String>,
+    /// The domain blank nodes are given IRIs under [default: the instance's]
+    #[arg(short, long)]
+    pub domain: Option<String>,
+    /// The file of the key to sign with [default: the actor's key file, which 'key add' writes]
+    #[arg(short = 'k', long)]
+    pub private_key: Option<String>,
 }
 
-impl Options {
-    /// Parses the options after `claim <command>`, of which `allowed` are accepted.
-    fn parse(args: &[String], allowed: &[&str]) -> Result<Self, String> {
-        let mut options = Self::default();
-        let mut i = 3;
-        while i < args.len() {
-            let name = match args[i].as_str() {
-                "-a" => "--attribution",
-                "-f" => "--file",
-                "-d" => "--domain",
-                "-k" => "--private-key",
-                other => other,
-            };
-            if name != "--env" && !allowed.contains(&name) {
-                return Err(format!("Unknown option: {}", args[i]));
-            }
-            let value = args.get(i + 1).ok_or_else(|| format!("Missing value for {}", name))?;
-            match name {
-                "--attribution" => {
-                    options.attribution = Some(parse_iri(value)
-                        .map_err(|e| format!("Invalid value for --attribution: {}", e))?);
-                },
-                "--file" => options.file = Some(value.clone()),
-                "--domain" => options.domain = Some(value.clone()),
-                "--private-key" => options.private_key = Some(value.clone()),
-                // --env was read before the command was dispatched
-                _ => {},
-            }
-            i += 2;
+/// Why something is erased.
+#[derive(clap::Args)]
+pub struct Why {
+    /// The class of reason
+    #[arg(long, value_parser = ["legal", "privacy", "upstream", "operational"])]
+    pub reason: String,
+    /// What authorizes the erasure, such as a ticket or a request
+    #[arg(long)]
+    pub authority: String,
+    /// A public reason, kept in the record of the erasure
+    #[arg(long)]
+    pub comment: Option<String>,
+}
+
+impl Why {
+    /// The reason as the kernel takes it.
+    pub fn reason(&self) -> Reason<'_> {
+        Reason { class: &self.reason, authority: &self.authority, comment: self.comment.as_deref() }
+    }
+}
+
+impl Source {
+    fn triples(&self, config: &Config) -> Result<Vec<Triple>> {
+        let prefixes = read_prefixes(&config.prefix_file);
+        let parsed = match &self.file {
+            Some(file) => read_triples_from_file(file, &prefixes).context("Error reading triples from file")?,
+            None => read_triples_from_stdin(&prefixes).context("Error reading triples from stdin")?,
+        };
+        if parsed.is_empty() {
+            return Err("No triples found in input.".into());
         }
-        Ok(options)
+        Ok(parsed)
+    }
+
+    fn domain<'a>(&'a self, config: &'a Config) -> &'a str {
+        self.domain.as_deref().unwrap_or(&config.domain)
     }
 }
 
-/// Reads the input triples and prepares the envelope, as `claim prepare` and `claim write`
-/// both do.
-fn prepare_from_input(args: &[String], config: &Config) -> Result<(Envelope, String), String> {
-    let options = Options::parse(args, &["--attribution", "--file", "--domain", "--private-key"])?;
-    let domain = options.domain.unwrap_or_else(|| config.domain.clone());
-    // If no attribution is given, the server claims
-    let attribution = options.attribution.unwrap_or_else(|| config.server.clone());
-
-    let prefixes = read_prefixes();
-    let parsed = match &options.file {
-        Some(file) => read_triples_from_file(file, &prefixes)
-            .map_err(|e| format!("Error reading triples from file: {}", e))?,
-        None => read_triples_from_stdin(&prefixes)
-            .map_err(|e| format!("Error reading triples from stdin: {}", e))?,
-    };
-    if parsed.is_empty() {
-        return Err("No triples found in input.".to_string());
-    }
-
-    let key = config.signing_key_for(&attribution, options.private_key.as_deref()).map_err(|e| e.to_string())?;
-    let store = Snapshot::load(&config.instance()).map_err(|e| format!("Error reading storage: {}", e))?;
-    let envelope = prepare(parsed, attribution, &domain, &store, &key)
-        .map_err(|e| format!("Error preparing claim: {}", e))?;
-    Ok((envelope, domain))
+/// Prepares and submits a claim of triples by an actor, in one step.
+pub fn write_claim(config: &Config, triples: Vec<Triple>, attribution: NamedNode, domain: &str, key_file: Option<&str>) -> Result<SignedClaim> {
+    let key = config.signing_key_for(&attribution, key_file)?;
+    let server_key = config.server_key()?;
+    write(triples, attribution, domain, &config.instance(), &key, &server_key).context("Claim rejected")
 }
 
-fn print_accepted(signed: &SignedClaim) {
+/// Prints what the server assigned an accepted claim.
+pub fn print_accepted(signed: &SignedClaim) {
     println!("  Claim: {}", signed.id());
     println!("  Sequence ID: {}", signed.sequence_id());
     println!("  Timestamp: {}", signed.timestamp());
     println!("  Server Signature: {}", signed.server_signature());
 }
 
-/// Handles the "claim prepare" command
-/// This command accepts a filename or stdin with NT or TTL triples,
-/// and returns all the triples of the ClaimEnvelope in TTL form to stdout.
-/// If an attribution URI is not specified, the server claims.
-pub fn handle_claim_prepare_command(args: &[String], env_path: &str) {
-    let prepared = Config::load(env_path).and_then(|config| prepare_from_input(args, &config));
-    match prepared {
-        Ok((envelope, _)) => print!("{}", envelope.to_turtle()),
-        Err(e) => eprintln!("{}", e),
-    }
+/// `claim prepare`: writes the signed envelope of a claim to standard output, as Turtle.
+pub fn prepare_command(config: &Config, source: &Source) -> Result {
+    let triples = source.triples(config)?;
+    let key = config.signing_key_for(&source.attribution, source.private_key.as_deref())?;
+    let store = Snapshot::load(&config.instance()).context("Error reading storage")?;
+    let envelope = prepare(triples, source.attribution.clone(), source.domain(config), &store, &key)
+        .context("Error preparing claim")?;
+    print!("{}", envelope.to_turtle());
+    Ok(())
 }
 
-/// Handles the "claim submit" command
-/// This command takes a file with a prepared claim envelope as a parameter or through stdin,
-/// completes the process to make a full Signed Claim, and then saves everything to data storage.
-pub fn handle_claim_submit_command(args: &[String], env_path: &str) {
-    let submitted = Config::load(env_path).and_then(|config| {
-        let options = Options::parse(args, &["--file"])?;
-        let text = match &options.file {
-            Some(file) => std::fs::read_to_string(file).map_err(|e| format!("Error reading file: {}", e))?,
-            None => {
-                let mut text = String::new();
-                io::stdin().read_to_string(&mut text).map_err(|e| format!("Error reading from stdin: {}", e))?;
-                text
-            },
-        };
-        // An envelope is written with every IRI in full or under its own prefixes
-        let triples = parse_turtle(Cursor::new(text), &HashMap::new())
-            .map_err(|e| format!("Error parsing claim envelope: {}", e))?;
-        let envelope = Envelope::from_triples(&triples)
-            .map_err(|e| format!("Claim submission rejected: {}", e))?;
-
-        let server_key = config.server_key().map_err(|e| e.to_string())?;
-        submit(envelope, &config.instance(), &server_key)
-            .map_err(|e| format!("Claim submission rejected: {}", e))
-    });
-    match submitted {
-        Ok(signed) => {
-            println!("Claim submitted and stored successfully.");
-            print_accepted(&signed);
+/// `claim submit`: verifies a prepared envelope and appends its claim to the log.
+pub fn submit_command(config: &Config, file: Option<&str>) -> Result {
+    let text = match file {
+        Some(file) => std::fs::read_to_string(file).context("Error reading file")?,
+        None => {
+            let mut text = String::new();
+            io::stdin().read_to_string(&mut text).context("Error reading from stdin")?;
+            text
         },
-        Err(e) => println!("{}", e),
-    }
+    };
+    // An envelope is written with every IRI in full or under its own prefixes
+    let triples = parse_turtle(Cursor::new(text), &HashMap::new()).context("Error parsing claim envelope")?;
+    let envelope = Envelope::from_triples(&triples).context("Claim submission rejected")?;
+    let signed = submit(envelope, &config.instance(), &config.server_key()?).context("Claim submission rejected")?;
+
+    println!("Claim submitted and stored successfully.");
+    print_accepted(&signed);
+    Ok(())
 }
 
-/// Handles the "claim write" command: prepare and submit in one step.
-/// If an attribution URI is not specified, the server claims.
-pub fn handle_claim_write_command(args: &[String], env_path: &str) {
-    let written = Config::load(env_path).and_then(|config| {
-        let (envelope, _) = prepare_from_input(args, &config)?;
-        let server_key = config.server_key().map_err(|e| e.to_string())?;
-        submit(envelope, &config.instance(), &server_key)
-            .map_err(|e| format!("Claim rejected: {}", e))
-    });
-    match written {
-        Ok(signed) => {
-            println!("Claim committed to data storage successfully.");
-            print_accepted(&signed);
-        },
-        Err(e) => println!("{}", e),
+/// `claim write`: prepare and submit in one step.
+pub fn write_command(config: &Config, source: &Source) -> Result {
+    let triples = source.triples(config)?;
+    let signed = write_claim(config, triples, source.attribution.clone(), source.domain(config), source.private_key.as_deref())?;
+    println!("Claim committed to data storage successfully.");
+    print_accepted(&signed);
+    Ok(())
+}
+
+/// `claim erase`: erases parts of an accepted claim, for good.
+pub fn erase_command(config: &Config, claim: &str, parts: &[String], why: &Why) -> Result {
+    let id: ClaimId = claim.parse()?;
+    let names = ClaimPart::ALL.map(ClaimPart::name).join(", ");
+    let parts = parts.iter()
+        .map(|name| ClaimPart::named(name).ok_or_else(|| format!("`{name}` is not a part that can be erased. The parts are: {names}.")))
+        .collect::<std::result::Result<Vec<ClaimPart>, String>>()?;
+    let erased = erase_claim(&config.instance(), id, &parts, why.reason(), &config.server_key()?).context("Not erased")?;
+
+    if erased.is_empty() {
+        println!("Nothing to erase: claim {id} no longer has those parts.");
+    } else {
+        println!("Erased from claim {id}: {}", erased.iter().map(|part| part.name()).collect::<Vec<_>>().join(", "));
+        println!("This cannot be undone. The claim keeps its ID, its place in the log and the server's signature.");
     }
+    Ok(())
+}
+
+/// `triple write`: claims one triple, as `claim write` does a file of them.
+pub fn triple_command(config: &Config, subject: &NamedNode, property: &NamedNode, object: &str, attribution: &NamedNode, key_file: Option<&str>) -> Result {
+    // The object is a literal if it is enclosed in quotes, and a URI otherwise
+    let triple = if object.len() >= 2 && object.starts_with('"') && object.ends_with('"') {
+        Triple::new(subject.clone(), property.clone(), Literal::new_simple_literal(&object[1..object.len() - 1]))
+    } else {
+        Triple::new(subject.clone(), property.clone(), crate::iri(object).context("Invalid object URI")?)
+    };
+    let signed = write_claim(config, vec![triple], attribution.clone(), &config.domain, key_file)?;
+
+    println!("Triple claimed successfully:");
+    for triple in signed.envelope().claim().triples() {
+        println!("{triple} .");
+    }
+    print_accepted(&signed);
+    Ok(())
 }

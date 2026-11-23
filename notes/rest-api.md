@@ -1,5 +1,7 @@
 # CLI to REST API Mapping
 
+> **Status.** This note predates the crate refactor. The mapping of commands to endpoints still describes the intent. What has changed since: every claim must name its actor (`--attribution`), `triple write` and `domain init` are claims, there are commands for keys (`key add`, `revoke`, `list`, `rotate`), erasure (`claim erase`, `actor erase`) and the log (`log verify`, `rebuild`, `export`), and a prepared envelope is refused if another claim was accepted first. See [architecture.md](architecture.md).
+
 This document maps the current Scatterbase CLI commands to a future HTTP REST API, and identifies functionality that needs to be added.
 
 ## Current CLI Commands → REST Endpoints

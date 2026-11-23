@@ -8,9 +8,6 @@
 //! hold yet, and [`rebuild`] writes it again from the first claim. How far the file has
 //! got is kept beside it, in `{storage file}.offset`, as the offset of the next claim to
 //! write.
-//!
-//! Triples written to the file by other means (`triple write`, `domain init`) are in the
-//! default graph and not in the log, so a rebuild does not bring them back.
 
 use std::fs;
 use std::io;
@@ -19,9 +16,10 @@ use std::path::PathBuf;
 use ed25519_dalek::VerifyingKey;
 use oxrdf::{NamedNode, Quad};
 use scatter_actors::signing::{current_keys, KeyRecord};
+use scatter_actors::time::Timestamp;
 use scatter_quadstore::{NQuadsFile, Pattern, QuadStore};
 
-use crate::instance::{Instance, GRAPH_META, GRAPH_MUTABLE};
+use crate::instance::{Instance, GRAPH_CLAIM, GRAPH_META, GRAPH_MUTABLE};
 use crate::keys;
 use crate::log::ClaimLog;
 use crate::storage;
@@ -52,19 +50,26 @@ pub fn catch_up(instance: &Instance, log: &ClaimLog) -> io::Result<u64> {
 
     if from < size {
         let meta = instance.graph(GRAPH_META);
-        for (offset, stored) in log.claims(from)? {
-            let content = instance.content_graph(stored.signed.envelope().claim().attribution());
-            storage::insert(&mut store, &stored.signed.to_quads(&content, &meta))?;
-            // A claim written twice changes nothing, so the position may lag but never lead
-            fs::write(position_file(instance), (offset + 1).to_string())?;
+        for stored in log.claims(from)? {
+            // A claim whose attestation was erased is nobody's, and so not the server's
+            let content = match &stored.claim.attestation {
+                Some((attribution, _)) => instance.content_graph(attribution),
+                None => instance.graph(GRAPH_CLAIM),
+            };
+            storage::insert(&mut store, &stored.claim.to_quads(&content, &meta))?;
         }
+        // A claim written twice changes nothing, so the position may lag but never lead
+        // Written whole or not at all: beside the file, then in its place
+        let next = position_file(instance).with_extension("offset.next");
+        fs::write(&next, size.to_string())?;
+        fs::rename(&next, position_file(instance))?;
     }
     project_keys(instance, log, &mut store)?;
     Ok(size)
 }
 
 /// Makes the `mutable` graph hold the registration of every key an actor has now, and
-/// nothing else: a key that was revoked leaves it.
+/// nothing else: a key that was revoked or has expired leaves it.
 fn project_keys(instance: &Instance, log: &ClaimLog, store: &mut NQuadsFile) -> io::Result<()> {
     let graph = instance.graph(GRAPH_MUTABLE);
 
@@ -75,9 +80,10 @@ fn project_keys(instance: &Instance, log: &ClaimLog, store: &mut NQuadsFile) -> 
             None => by_actor.push((actor, vec![record])),
         }
     }
+    let now = Timestamp(u64::try_from(chrono::Utc::now().timestamp_micros()).unwrap_or(0));
     let mut current: Vec<Quad> = Vec::new();
     for (actor, records) in &by_actor {
-        for key in current_keys(records) {
+        for key in current_keys(records).into_iter().filter(|key| key.is_valid_at(now)) {
             let key = VerifyingKey::from_bytes(&key.public_key.0)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             current.extend(keys::registration(actor, &key).into_iter().map(|triple| triple.in_graph(graph.clone())));

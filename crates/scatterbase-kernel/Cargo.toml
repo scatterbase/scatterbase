@@ -3,6 +3,7 @@ name = "scatterbase-kernel"
 description = "The Scatterbase kernel: RDF terms and triples, signed claim envelopes, keys and storage"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
@@ -14,7 +15,6 @@ scatter-actors.workspace = true
 scatter-integrity.workspace = true
 pollster.workspace = true
 rand.workspace = true
-dotenv.workspace = true
 ed25519-dalek.workspace = true
 rand_core.workspace = true
 sha2.workspace = true

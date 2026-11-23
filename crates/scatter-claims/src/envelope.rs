@@ -7,7 +7,7 @@ use std::str::FromStr;
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
 use oxrdf::NamedNode;
 
-use crate::id::{zbase32, zbase32_decode, ClaimId};
+use crate::id::{sha256, zbase32, zbase32_decode, ClaimId};
 use crate::{Claim, ClaimError};
 
 /// The first line of the preimage of a client's signature.
@@ -32,6 +32,12 @@ impl Signature {
     /// The 64 bytes of the signature.
     pub const fn as_bytes(&self) -> &[u8; 64] {
         &self.0
+    }
+
+    /// The SHA-256 of the signature, in z-base-32: what stands for it where the signature
+    /// itself may later be erased.
+    pub fn digest(&self) -> String {
+        zbase32(&sha256(&self.0))
     }
 
     fn sign(key: &SigningKey, preimage: &str) -> Self {
@@ -225,22 +231,68 @@ impl SignedClaim {
         self.server_signature
     }
 
+    /// The server's acceptance: what remains of a signed claim when everything that can be
+    /// erased is.
+    pub fn acceptance(&self) -> Acceptance {
+        Acceptance {
+            claim: self.id(),
+            client_signature: self.envelope.signature().digest(),
+            sequence_id: self.sequence_id.clone(),
+            timestamp: self.timestamp.clone(),
+            signature: self.server_signature,
+        }
+    }
+
+    /// The text the server signs; see [`Acceptance::preimage`].
+    pub fn acceptance_preimage(&self) -> String {
+        self.acceptance().preimage()
+    }
+}
+
+fn acceptance_preimage(envelope: &Envelope, sequence_id: &str, timestamp: &str) -> String {
+    format!("{ACCEPTANCE_TAG}\n{}\n{}\n{sequence_id}\n{timestamp}\n", envelope.id(), envelope.signature().digest())
+}
+
+/// A server's acceptance of a claim: the claim's ID, the digest of the actor's signature,
+/// the sequence ID and time the server assigned, and the server's signature over them.
+///
+/// It names the claim and the actor's signature by hashes alone, so it can be kept, and
+/// its signature checked, after the claim's triples and the actor's signature are erased.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Acceptance {
+    /// The claim's ID.
+    pub claim: ClaimId,
+    /// The [digest](Signature::digest) of the actor's signature.
+    pub client_signature: String,
+    /// The sequence ID the server assigned.
+    pub sequence_id: String,
+    /// When the server accepted the claim, as it wrote it.
+    pub timestamp: String,
+    /// The server's signature.
+    pub signature: Signature,
+}
+
+impl Acceptance {
     /// The text the server signs. Each line ends with a line feed:
     ///
     /// ```text
     /// scatter-claim-acceptance-v0
     /// {claim ID in z-base-32}
-    /// {client signature, as ed25519:…}
+    /// {SHA-256 of the actor's signature, in z-base-32}
     /// {sequence ID}
     /// {timestamp}
     /// ```
-    pub fn acceptance_preimage(&self) -> String {
-        acceptance_preimage(&self.envelope, &self.sequence_id, &self.timestamp)
+    pub fn preimage(&self) -> String {
+        format!(
+            "{ACCEPTANCE_TAG}\n{}\n{}\n{}\n{}\n",
+            self.claim, self.client_signature, self.sequence_id, self.timestamp,
+        )
     }
-}
 
-fn acceptance_preimage(envelope: &Envelope, sequence_id: &str, timestamp: &str) -> String {
-    format!("{ACCEPTANCE_TAG}\n{}\n{}\n{sequence_id}\n{timestamp}\n", envelope.id(), envelope.signature())
+    /// Checks the server's signature against the server's public key.
+    pub fn verify(&self, server_key: &VerifyingKey) -> Result<(), ClaimError> {
+        self.signature.verify(server_key, &self.preimage(), "server")
+    }
 }
 
 fn check_acceptance(sequence_id: &str, timestamp: &str) -> Result<(), ClaimError> {
@@ -339,11 +391,14 @@ pub(crate) mod tests {
             signed.acceptance_preimage(),
             format!(
                 "scatter-claim-acceptance-v0\n{}\n{}\n2026112300000000000\n2026-11-23T00:00:00.000Z\n",
-                envelope.id(), envelope.signature(),
+                envelope.id(), envelope.signature().digest(),
             ),
         );
         assert_eq!(signed.verify(&key(9).verifying_key()), Ok(()));
         assert_eq!(signed.verify(&key(1).verifying_key()), Err(ClaimError::BadSignature("server")));
+        // The acceptance alone is enough to check the server's signature
+        assert_eq!(signed.acceptance().verify(&key(9).verifying_key()), Ok(()));
+        assert_eq!(signed.acceptance().client_signature.len(), 52);
 
         let moved = SignedClaim::from_parts(envelope.clone(), "2026112300000000001", signed.timestamp(), signed.server_signature()).unwrap();
         assert_eq!(moved.verify(&key(9).verifying_key()), Err(ClaimError::BadSignature("server")));

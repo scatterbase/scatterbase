@@ -1,5 +1,7 @@
 # Librarybase Migration to Scatterbase
 
+> **Status.** This note predates the crate refactor. The migration goal still holds. The entity namespace registry and identifier handling it lists as work to do exist as the shared `scatter-providers` and `scatter-keyed` crates, and its statements about what Scatterbase already has describe the kernel before signature verification, the log and named graphs. See [architecture.md](architecture.md).
+
 Librarybase is a bibliographic metadata database aiming to be the comprehensive source for "everything". It incorporates structured data from external sources including Wikidata and OpenAlex. This document outlines the work required to support Librarybase on Scatterbase.
 
 ## Background

@@ -10,9 +10,6 @@ pub mod log;
 pub mod lookup;
 pub mod projection;
 pub mod prefix;
-pub mod utils;
-pub mod constants;
-// term_command has been merged into term
 
 // Tests
 #[cfg(test)]

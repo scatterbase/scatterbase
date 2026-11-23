@@ -26,6 +26,16 @@ cargo build --release
 
 The binary will be available at `target/release/scatterbase`.
 
+## Development
+
+```bash
+cargo build --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+CI runs these three on every pull request and on `main`. The shared `scatter-*` crates are taken from the triplespace repository at a commit pinned in `Cargo.toml`, and need Rust 1.95 or later.
+
 ## Repository Layout
 
 The repository is a Cargo workspace:
@@ -46,34 +56,40 @@ scatterbase init
 ```
 This command will prompt you for configuration details (domain, storage file path, etc.) and generate a server key pair. Use the `-d` or `--default` flag to use default values.
 
+Every command and subcommand describes itself with `--help`, for example `scatterbase claim erase --help`. A command that fails says why on standard error and exits with a non-zero status. `--env <path>` names a configuration file other than `.env`.
+
 ### Core Commands
 
 #### Domain Management
-Initialize a domain with a default triple:
+Claim, as the server, that a domain is a dataset:
 ```bash
-scatterbase domain init
+scatterbase domain init https://example.org
 ```
 
 #### Triple Management
-Write a single triple directly to the store:
+Claim a single triple, as the actor named by `--attribution`:
 ```bash
-scatterbase triple write <subject> <predicate> <object>
+scatterbase triple write <subject> <predicate> <object> --attribution <actor>
 ```
 
 #### Claim Management
-Claims are the primary unit of signed data in Scatterbase.
+Claims are the primary unit of signed data in Scatterbase. Every claim names who makes it with `--attribution`: an actor with a registered key, or the server's own URI.
 
 - **Prepare a claim**: Create a signed envelope from a set of triples.
   ```bash
-  scatterbase claim prepare --file triples.nt > claim_envelope.ttl
+  scatterbase claim prepare --attribution <actor> --file triples.nt > claim_envelope.ttl
   ```
-- **Submit a claim**: Write a prepared claim envelope to the data store.
+- **Submit a claim**: Verify a prepared claim envelope and append it to the log.
   ```bash
   scatterbase claim submit --file claim_envelope.ttl
   ```
 - **Write a claim (direct)**: Combine prepare and submit in one step.
   ```bash
-  scatterbase claim write --file triples.nt
+  scatterbase claim write --attribution <actor> --file triples.nt
+  ```
+- **Erase parts of a claim**, for good: what was claimed (`content`), who claimed it (`attestation`) or what it acknowledged (`acknowledgments`). The claim keeps its ID, its place in the log and the server's signature.
+  ```bash
+  scatterbase claim erase <claim> --parts content --reason privacy --authority ticket:4411
   ```
 
 #### Key Management
@@ -83,21 +99,45 @@ scatterbase key add --attribution https://example.org/alice
 ```
 This generates a new Ed25519 key for the actor, keeps it beside the server's key, and registers its public key in the log as a key record written by the server. `claim prepare` and `claim write` then sign that actor's claims with it. Use `--file <keyfile>` to register a key you already hold, and `--private-key <keyfile>` when preparing a claim with it. `claim submit` verifies every claim's signature against the actor's registered keys.
 
-Revoke an actor's keys, after which `key add` registers a new one:
+A key can be given an end date with `--expires 2027-12-31T00:00:00Z`.
+
+Revoke an actor's keys, or one of them with `--key-id`, after which `key add` registers a new one:
 ```bash
 scatterbase key revoke --attribution https://example.org/alice
+```
+
+List the keys of an actor, or of the server:
+```bash
+scatterbase key list --attribution https://example.org/alice
+scatterbase key list
+```
+
+Replace the server's key. The log records the new key, signed by the old one; what the old key signed still verifies:
+```bash
+scatterbase key rotate
+```
+
+#### Actors
+Erase an actor from the log, for good: its record and its keys. The claims it made are not touched.
+```bash
+scatterbase actor erase --attribution https://example.org/alice --reason privacy --authority ticket:4412
 ```
 
 #### Claim Log
 The log under `data/log` has three partitions. The server partition holds the server's key, as a self-signed founding record, and the registry of the instance's graphs. The mutable partition holds the keys registered for actors. The claim partition holds every accepted claim. The server signs a checkpoint of a partition after each record. The storage file is derived from the claims.
 
-- **Verify the log**: check the server's key chain, the signed checkpoints, every record and every signature.
+- **Verify the log**: check the server's key chain, the signed checkpoints, every record, every signature and that every erased part is accounted for by a record of its erasure.
   ```bash
   scatterbase log verify
   ```
 - **Rebuild the storage file** from the log.
   ```bash
   scatterbase log rebuild
+  ```
+- **Export a bundle**: a copy of the log that anyone can verify with nothing but the server's public key. With `--backup` it also holds who the actors are, and is not for publication.
+  ```bash
+  scatterbase log export ./bundle
+  scatterbase log verify --bundle ./bundle --key urn:ed25519:<the server's public key>
   ```
 
 #### Prefix Management
@@ -113,7 +153,7 @@ scatterbase term latest <uri>
 ```
 
 #### Purge Data
-Delete all stored data (Warning: destructive!):
+Delete everything the instance keeps: the log, the store, every key and the configuration (Warning: destructive!). It asks for confirmation unless given `--yes`:
 ```bash
 scatterbase purge
 ```
@@ -128,9 +168,9 @@ Scatterbase is currently in active development. Below is the status of core comp
 - [x] **ED25519 Cryptography**: Key generation, signing, and verification.
 - [x] **Base32z Encoding**: Custom encoding for all identifiers.
 - [x] **File-based Storage**: A checkpointed claim log, and an N-Quads store derived from it.
-- [x] **CLI Interface**: Robust command-line interface with help for all commands.
+- [x] **CLI Interface**: Command-line interface on `clap`, with help for every command and meaningful exit statuses.
 - [x] **Claim Envelopes**: Implementation of signed claim structures with sequence IDs and timestamps.
-- [x] **Term Lookup**: Ability to scan storage for the most recent activity related to a term.
+- [x] **Term Lookup**: The most recent claim to use a term, from the store's indexes.
 - [ ] **Advanced Querying**: Support for SPARQL or complex graph queries (planned).
 - [ ] **Network Synchronization**: P2P or client-server synchronization of claims (planned).
 

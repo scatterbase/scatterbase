@@ -10,5 +10,3 @@ mod test_literal;
 mod test_triples_parsing;
 #[cfg(test)]
 mod test_dataset_parsing;
-#[cfg(test)]
-mod test_env_files;

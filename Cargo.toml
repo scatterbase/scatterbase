@@ -11,6 +11,8 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
+# The shared scatter crates need 1.95
+rust-version = "1.95"
 repository = "https://github.com/scatterbase/scatterbase"
 
 [workspace.dependencies]
@@ -34,6 +36,10 @@ scatter-log = { git = "https://github.com/scatterbase/triplespace", rev = "7839c
 scatter-integrity = { git = "https://github.com/scatterbase/triplespace", rev = "7839c357743fa2024bdb88bbff7dac4ae3e89f68" }
 # Driving the log's futures from synchronous code: the file backend does its I/O inline
 pollster = "1"
+
+# The command line
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"
 
 # RDF terms and I/O: the oxrdf family, as the shared scatter crates use
 oxrdf = { version = "0.3", features = ["rdf-12"] }
