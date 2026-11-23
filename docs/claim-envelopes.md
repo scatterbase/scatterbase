@@ -7,7 +7,7 @@ A **claim** is the unit of provenance in Scatterbase. Triples are not stored as 
 A claim goes through two phases:
 
 1. **Envelope** (client side). The actor prepares a claim of a set of triples, acknowledges the prior use of each term, and signs. `scatterbase claim prepare` writes an envelope.
-2. **Signed claim** (server side). The server verifies the actor's signature against the actor's registered key, assigns a sequence ID and a timestamp, signs, and stores the result. `scatterbase claim submit` does this; `scatterbase claim write` does both phases in one step and stores exactly the same triples.
+2. **Signed claim** (server side). The server verifies the actor's signature against the actor's registered key, assigns a sequence ID and a timestamp, signs, and appends the result to the claim log. `scatterbase claim submit` does this; `scatterbase claim write` does both phases in one step and stores exactly the same triples.
 
 ## Hashes
 
@@ -54,6 +54,8 @@ A claim holds neither, so when triples are read from a file:
 
 For every IRI the claim uses in subject or object position, the envelope records which claim last used that term as far as the client knew, or "no claim". Every claim acknowledges every term it uses, so the claims that used a term are the claims with an acknowledgment of it.
 
+A server accepts an envelope only if it is current: its previous claim is the actor's latest claim in the store, and each acknowledgment names the claim that last used its term. An envelope prepared before another claim was accepted is refused, and is prepared again against the store as it then is. So no claim is accepted without its actor having seen every earlier claim about the same terms.
+
 ## Signatures
 
 Both signatures are Ed25519, written `ed25519:` followed by the 64 bytes in z-base-32.
@@ -78,7 +80,7 @@ scatter-claim-acceptance-v0
 {timestamp}
 ```
 
-The sequence ID is the acceptance time to the millisecond, `YYYYMMDDHHMMSSmmm`, followed by two digits; it is always greater than every sequence ID already in the store. The timestamp is the same time in RFC 3339 with milliseconds, in UTC.
+The sequence ID is the claim's offset in the claim log, written in decimal: the first claim an instance accepts has sequence ID `0`, and there are no gaps. The timestamp is the acceptance time in RFC 3339 with milliseconds, in UTC.
 
 ## Keys
 
@@ -91,7 +93,7 @@ A public key is named by `urn:ed25519:{key}`, the 32 bytes in z-base-32. An acto
 <urn:ed25519:{key}> scatter:owner <{actor}> .
 ```
 
-The actor's key is the one registered by the latest such claim. The server refuses a claim whose signature does not verify against its actor's registered key, and a claim by an actor with no registered key. The one exception is the first claim of an empty store, which may register its own actor's key and is checked against that key: this is how a server's key is registered by `scatterbase init`. `scatterbase key add` registers every other actor's key in a claim by the server.
+The actor's key is the one registered by the latest such claim. The server refuses a claim whose signature does not verify against its actor's registered key, and a claim by an actor with no registered key. The one exception is the first claim of an empty log, which may register its own actor's key and is checked against that key: this is how a server's key is registered by `scatterbase init`. `scatterbase key add` registers every other actor's key in a claim by the server.
 
 Each actor has its own key. The server's private key is in the file the configuration names; `key add` writes an actor's new key to `actors/{hash}.ed25519.private` beside it, where `{hash}` is the SHA-256 of the actor's IRI in z-base-32.
 
@@ -135,6 +137,22 @@ scatter_claim:{C} scatter:serverSignature "ed25519:{signature}" .
 In Turtle the envelope is written one triple per line: the claim's triples in order, then the triples about them in order, then the actor's signature, then the server's triples with the server's signature last.
 
 **Reading an envelope back.** The claim's triples are taken from the reification of every `scatter_triple:{T}` claimed in `C`, each checked against its triple hash; the claim ID is then recomputed and must equal `C`. A set of triples that reads back is therefore the envelope that was written, and the signatures can be checked against it.
+
+## The claim log
+
+Accepted claims are kept in an append-only log, which is the instance's source of truth. The log is a `scatter-log` file store with one partition, `claim`, that keeps every record. After each append the server signs a checkpoint of the partition's Merkle tree head under the origin `{host}/log/claim`, so a copy of the log can be shown to be complete and in order. `scatterbase log verify` checks the checkpoint, every record and every signature.
+
+A claim is one record of payload type `scatter:v0/claim`. Its header key is the claim ID in z-base-32, its `appended_at` is the acceptance time, and its offset is the claim's sequence ID. Its body has five parts, each salted and erasable on its own:
+
+| # | Part | CBOR |
+|---|---|---|
+| 0 | The claim | `{"previous": bytes(32), "triples": [text, …]}`, each triple its N-Triples line, in the claim's order |
+| 1 | The attribution | text, the actor's IRI |
+| 2 | The client signature | `{"alg": "ed25519", "key": bytes(32), "sig": bytes(64)}`, `key` being the public key the signature verified against |
+| 3 | The server signature | `{"alg": "ed25519", "key": bytes(32), "sig": bytes(64), "sequence": text, "timestamp": text}` |
+| 4 | The acknowledgments | `[[text, bytes(32)], …]`: term IRI and prior claim ID, in order of the IRI |
+
+The N-Triples storage file is derived from the log: it holds the RDF form of every claim, below, and `scatterbase log rebuild` writes it again from the log. Lookups (the latest claim using a term, an actor's latest claim, an actor's key) read it.
 
 ## IRI reference
 

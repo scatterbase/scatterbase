@@ -6,6 +6,7 @@ use ed25519_dalek::SigningKey;
 use oxrdf::{NamedNode, Triple};
 
 use crate::claim::{prepare, submit};
+use crate::instance::Instance;
 use crate::keys;
 use crate::lookup::Snapshot;
 use crate::uri::{rdf, scatter, vocab};
@@ -19,23 +20,19 @@ pub fn create_initial_triple(domain: &str) -> Triple {
     Triple::new(subject, property, object)
 }
 
-/// Writes the first two claims of an instance into its empty store, both by the server:
+/// Writes the first two claims of an instance into its empty log, both by the server:
 ///
 /// 1. the registration of the server's own key, which is checked against the key it
 ///    registers ([`submit`]);
 /// 2. the declaration of the domain as a `schema:Dataset` and a `scatter:Domain`.
-pub fn create_initial_claims(
-    domain: &str,
-    server: &NamedNode,
-    storage_file: &str,
-    server_key: &SigningKey,
-) -> io::Result<()> {
+pub fn create_initial_claims(instance: &Instance, server_key: &SigningKey) -> io::Result<()> {
     let invalid = |e| io::Error::new(io::ErrorKind::InvalidData, e);
+    let (domain, server) = (instance.domain.as_str(), &instance.server);
+    let store = || Snapshot::load(&instance.storage_file);
 
     let registration = keys::registration(server, &server_key.verifying_key());
-    let envelope = prepare(registration, server.clone(), domain, &Snapshot::load(storage_file)?, server_key)
-        .map_err(invalid)?;
-    submit(envelope, domain, storage_file, server_key)?;
+    let envelope = prepare(registration, server.clone(), domain, &store()?, server_key).map_err(invalid)?;
+    submit(envelope, instance, server_key)?;
 
     let domain_iri = NamedNode::new(domain).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     let declaration = vec![
@@ -46,9 +43,8 @@ pub fn create_initial_claims(
             NamedNode::new_unchecked(format!("{}Domain", scatter::TERMS_BASE)),
         ),
     ];
-    let envelope = prepare(declaration, server.clone(), domain, &Snapshot::load(storage_file)?, server_key)
-        .map_err(invalid)?;
-    submit(envelope, domain, storage_file, server_key)?;
+    let envelope = prepare(declaration, server.clone(), domain, &store()?, server_key).map_err(invalid)?;
+    submit(envelope, instance, server_key)?;
     Ok(())
 }
 
@@ -60,14 +56,13 @@ mod tests {
     #[test]
     fn an_instance_starts_with_the_key_and_the_domain() {
         let dir = tempfile::tempdir().unwrap();
-        let storage_file = dir.path().join("store.nt");
-        let storage_file = storage_file.to_str().unwrap();
         let server = NamedNode::new("http://example.org/Server").unwrap();
+        let instance = Instance::new("http://example.org", server.clone(), dir.path().join("store.nt").to_str().unwrap());
         let server_key = keys::generate();
 
-        create_initial_claims("http://example.org", &server, storage_file, &server_key).unwrap();
+        create_initial_claims(&instance, &server_key).unwrap();
 
-        let store = Snapshot::load(storage_file).unwrap();
+        let store = Snapshot::load(&instance.storage_file).unwrap();
         assert_eq!(store.public_key(server.as_ref()), Some(server_key.verifying_key()));
         assert!(store.triples().contains(&create_initial_triple("http://example.org")));
         let domain = NamedNode::new("http://example.org").unwrap();

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use ed25519_dalek::SigningKey;
 use oxrdf::NamedNode;
 use scatterbase_kernel::keys;
+use scatterbase_kernel::Instance;
 use scatterbase_kernel::uri::parse_iri;
 
 /// What the commands need to know about the instance.
@@ -42,6 +43,16 @@ impl Config {
             secret_key_file: var("ED25519_SECRET_KEY_FILE")?,
             domain,
         })
+    }
+
+    /// The instance as the kernel knows it. Its log is the directory named by `LOG_DIR`, or
+    /// `log` beside the storage file.
+    pub fn instance(&self) -> Instance {
+        let mut instance = Instance::new(self.domain.clone(), self.server.clone(), self.storage_file.clone());
+        if let Ok(log_dir) = env::var("LOG_DIR") {
+            instance.log_dir = PathBuf::from(log_dir);
+        }
+        instance
     }
 
     /// The server's signing key.

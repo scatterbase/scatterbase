@@ -89,6 +89,7 @@ pub fn print_help() {
         ("triple", "Triple management commands"),
         ("claim", "Claim management commands"),
         ("key", "Key management commands"),
+        ("log", "Verify the claim log or rebuild the storage file from it"),
         ("prefix", "Prefix management commands"),
         ("purge", "Purge data commands"),
         ("term", "Term-related commands"),

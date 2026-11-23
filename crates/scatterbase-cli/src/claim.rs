@@ -121,7 +121,7 @@ pub fn handle_claim_submit_command(args: &[String], env_path: &str) {
             .map_err(|e| format!("Claim submission rejected: {}", e))?;
 
         let server_key = config.server_key().map_err(|e| e.to_string())?;
-        submit(envelope, &config.domain, &config.storage_file, &server_key)
+        submit(envelope, &config.instance(), &server_key)
             .map_err(|e| format!("Claim submission rejected: {}", e))
     });
     match submitted {
@@ -137,9 +137,9 @@ pub fn handle_claim_submit_command(args: &[String], env_path: &str) {
 /// If an attribution URI is not specified, the server claims.
 pub fn handle_claim_write_command(args: &[String], env_path: &str) {
     let written = Config::load(env_path).and_then(|config| {
-        let (envelope, domain) = prepare_from_input(args, &config)?;
+        let (envelope, _) = prepare_from_input(args, &config)?;
         let server_key = config.server_key().map_err(|e| e.to_string())?;
-        submit(envelope, &domain, &config.storage_file, &server_key)
+        submit(envelope, &config.instance(), &server_key)
             .map_err(|e| format!("Claim rejected: {}", e))
     });
     match written {

@@ -8,23 +8,26 @@
 //! - [`prepare`] makes a signed envelope of them: it finds the actor's previous claim and
 //!   the prior use of each term in the store;
 //! - [`submit`] accepts an envelope: it checks the actor's signature against the actor's
-//!   registered key, refuses a claim the store already holds, assigns the sequence ID and
-//!   the time, signs as the server and appends the triples.
+//!   registered key, refuses a claim the store already holds or one prepared against an
+//!   older state of the store ([`check_current`]), signs as the server, appends the claim
+//!   to the claim log ([`crate::log`]) and brings the store up to the log.
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{SecondsFormat, Utc};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use oxrdf::{NamedNode, NamedOrBlankNode, Term, Triple};
 use oxttl::{NTriplesParser, TurtleParser};
 use scatter_claims::{Acknowledgments, Claim, ClaimError, Envelope, SignedClaim};
 
+use crate::instance::Instance;
 use crate::keys::public_key_from_iri;
+use crate::log::ClaimLog;
 use crate::lookup::Snapshot;
 use crate::prefix::expand_prefix;
-use crate::storage::create_storage;
+use crate::projection;
 use crate::uri::{parse_iri, scatter};
 
 /// Reads triples from a file: Turtle if its name ends in `.ttl`, N-Triples otherwise.
@@ -111,25 +114,27 @@ pub fn prepare(
     Envelope::sign(claim, acknowledgments, key)
 }
 
-/// Accepts an envelope into the store and returns the signed claim.
+/// Accepts an envelope and returns the signed claim.
 ///
-/// The envelope's signature must verify against the key its actor has registered. An actor
-/// with no registered key is refused, with one exception: the first claim of an empty
-/// store may register its own actor's key and is checked against that key, which is how a
+/// The envelope's signature must verify against the key its actor has registered, and the
+/// envelope must have been prepared against the store as it is now ([`check_current`]). An
+/// actor with no registered key is refused, with one exception: the first claim of an empty
+/// log may register its own actor's key and is checked against that key, which is how a
 /// server's key comes to be registered.
-pub fn submit(
-    envelope: Envelope,
-    domain: &str,
-    storage_file: &str,
-    server_key: &SigningKey,
-) -> io::Result<SignedClaim> {
-    let store = Snapshot::load(storage_file)?;
+///
+/// An accepted claim is appended to the claim log, where its offset is its sequence ID,
+/// and the store is brought up to the log.
+pub fn submit(envelope: Envelope, instance: &Instance, server_key: &SigningKey) -> io::Result<SignedClaim> {
+    let mut log = ClaimLog::open(&instance.log_dir, &instance.domain)?;
+    projection::catch_up(instance, &log)?;
+    let store = Snapshot::load(&instance.storage_file)?;
     let claim = envelope.claim();
     let attribution = claim.attribution();
+    let offset = log.size()?;
 
     let key = match store.public_key(attribution.as_ref()) {
         Some(key) => key,
-        None => founding_key(&store, claim).ok_or_else(|| io::Error::new(
+        None => founding_key(offset, claim).ok_or_else(|| io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
                 "No public key found for attribution URI {attribution}. Register one first using: scatterbase key add --attribution {}",
@@ -149,33 +154,49 @@ pub fn submit(
             format!("A claim with the hash '{id}' already exists in the database."),
         ));
     }
+    check_current(&envelope, &store).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
-    let now = Utc::now();
-    let greatest = store.triples().iter()
-        .filter(|t| t.predicate.as_str() == scatter::SEQ_ID)
-        .filter_map(|t| match &t.object {
-            Term::Literal(literal) => Some(literal.value()),
-            _ => None,
-        })
-        .max();
     let signed = SignedClaim::accept(
         envelope,
-        next_sequence_id(now, greatest),
-        now.to_rfc3339_opts(SecondsFormat::Millis, true),
+        offset.to_string(),
+        Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
         server_key,
     ).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    let mut storage = create_storage(storage_file);
-    storage.init(domain)?;
-    for triple in signed.to_triples() {
-        storage.append(&triple)?;
-    }
+    log.append(&signed, &key, server_key)?;
+    projection::catch_up(instance, &log)?;
     Ok(signed)
 }
 
-/// The key the first claim of an empty store registers for its own actor, if it does.
-fn founding_key(store: &Snapshot, claim: &Claim) -> Option<VerifyingKey> {
-    if !store.is_empty() {
+/// Checks that an envelope was prepared against the store as it is now: that its claim
+/// follows the actor's latest claim, and that it acknowledges, for each term, the claim
+/// that last used the term.
+///
+/// An envelope that fails was prepared before another claim was accepted. Nothing is wrong
+/// with its content: preparing it again gives one that passes.
+pub fn check_current(envelope: &Envelope, store: &Snapshot) -> Result<(), String> {
+    let claim = envelope.claim();
+    let latest = store.latest_claim_by(claim.attribution().as_ref());
+    if claim.previous() != latest {
+        return Err(format!(
+            "the claim follows {}, but the latest claim by {} is {}. Prepare the claim again.",
+            claim.previous(), claim.attribution(), latest,
+        ));
+    }
+    for (term, acknowledged) in envelope.acknowledgments() {
+        let latest = store.latest_claim_using(term.as_ref());
+        if *acknowledged != latest {
+            return Err(format!(
+                "the claim acknowledges {acknowledged} as the last use of {term}, but it was last used in {latest}. Prepare the claim again.",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The key the first claim of an empty log registers for its own actor, if it does.
+fn founding_key(offset: u64, claim: &Claim) -> Option<VerifyingKey> {
+    if offset != 0 {
         return None;
     }
     let actor = NamedOrBlankNode::from(claim.attribution().clone());
@@ -187,25 +208,9 @@ fn founding_key(store: &Snapshot, claim: &Claim) -> Option<VerifyingKey> {
         })
 }
 
-/// The sequence ID of a claim accepted at `now`: the time to the millisecond as
-/// `YYYYMMDDHHMMSSmmm` followed by two digits, `00` unless that would not be greater than
-/// the greatest sequence ID already in the store, in which case it is that ID plus one.
-/// Sequence IDs therefore only ever increase.
-pub fn next_sequence_id(now: DateTime<Utc>, greatest: Option<&str>) -> String {
-    let from_clock = format!("{}00", now.format("%Y%m%d%H%M%S%3f"));
-    match greatest {
-        Some(greatest) if greatest >= from_clock.as_str() => match greatest.parse::<u128>() {
-            Ok(n) => format!("{:019}", n + 1),
-            Err(_) => from_clock,
-        },
-        _ => from_clock,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
     use oxrdf::Literal;
     use scatter_claims::ClaimId;
     use std::io::Cursor;
@@ -218,10 +223,10 @@ mod tests {
 
     const DOMAIN: &str = "http://example.org";
 
-    /// A store in a temporary directory whose server key is registered.
+    /// An instance in a temporary directory whose server key is registered.
     struct Fixture {
         _dir: tempfile::TempDir,
-        storage_file: String,
+        instance: Instance,
         server: NamedNode,
         server_key: SigningKey,
     }
@@ -229,16 +234,20 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             let dir = tempfile::tempdir().unwrap();
-            let storage_file = dir.path().join("store.nt").to_str().unwrap().to_string();
             let server = iri("http://example.org/Server");
+            let instance = Instance::new(DOMAIN, server.clone(), dir.path().join("store.nt").to_str().unwrap());
             let server_key = keys::generate();
-            let fixture = Self { _dir: dir, storage_file, server, server_key };
+            let fixture = Self { _dir: dir, instance, server, server_key };
             fixture.claim(keys::registration(&fixture.server, &fixture.server_key.verifying_key()), &fixture.server, &fixture.server_key).unwrap();
             fixture
         }
 
         fn store(&self) -> Snapshot {
-            Snapshot::load(&self.storage_file).unwrap()
+            Snapshot::load(&self.instance.storage_file).unwrap()
+        }
+
+        fn log(&self) -> ClaimLog {
+            ClaimLog::open(&self.instance.log_dir, DOMAIN).unwrap()
         }
 
         fn prepare(&self, triples: Vec<Triple>, actor: &NamedNode, key: &SigningKey) -> Envelope {
@@ -246,7 +255,7 @@ mod tests {
         }
 
         fn claim(&self, triples: Vec<Triple>, actor: &NamedNode, key: &SigningKey) -> io::Result<SignedClaim> {
-            submit(self.prepare(triples, actor, key), DOMAIN, &self.storage_file, &self.server_key)
+            submit(self.prepare(triples, actor, key), &self.instance, &self.server_key)
         }
 
         /// Registers a new key for an actor, as `key add` does, and returns it.
@@ -306,7 +315,7 @@ mod tests {
         let second = fixture.claim(vec![name("http://example.org/a", "A again")], &alice, &alice_key).unwrap();
         assert_eq!(second.envelope().claim().previous(), first.id());
         assert_eq!(second.envelope().acknowledgments()[&iri("http://example.org/a")], by_bob.id());
-        assert!(second.sequence_id() > by_bob.sequence_id() && by_bob.sequence_id() > first.sequence_id());
+        assert_eq!([first.sequence_id(), by_bob.sequence_id(), second.sequence_id()], ["3", "4", "5"]);
 
         let store = fixture.store();
         assert_eq!(store.latest_claim_by(alice.as_ref()), second.id());
@@ -344,9 +353,45 @@ mod tests {
     fn the_same_envelope_is_accepted_once() {
         let fixture = Fixture::new();
         let envelope = fixture.prepare(vec![name("http://example.org/a", "A")], &fixture.server, &fixture.server_key);
-        submit(envelope.clone(), DOMAIN, &fixture.storage_file, &fixture.server_key).unwrap();
-        let error = submit(envelope, DOMAIN, &fixture.storage_file, &fixture.server_key).unwrap_err();
+        submit(envelope.clone(), &fixture.instance, &fixture.server_key).unwrap();
+        let error = submit(envelope, &fixture.instance, &fixture.server_key).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    }
+
+    #[test]
+    fn an_envelope_behind_the_actors_chain_is_refused() {
+        let fixture = Fixture::new();
+        let first = fixture.prepare(vec![name("http://example.org/a", "A")], &fixture.server, &fixture.server_key);
+        let second = fixture.prepare(vec![name("http://example.org/b", "B")], &fixture.server, &fixture.server_key);
+        submit(first, &fixture.instance, &fixture.server_key).unwrap();
+
+        let error = submit(second, &fixture.instance, &fixture.server_key).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("the latest claim by <http://example.org/Server>"), "{error}");
+
+        // Prepared again, the same triples are accepted
+        fixture.claim(vec![name("http://example.org/b", "B")], &fixture.server, &fixture.server_key).unwrap();
+    }
+
+    #[test]
+    fn an_envelope_with_a_stale_acknowledgment_is_refused() {
+        let fixture = Fixture::new();
+        let alice = iri("http://example.org/alice");
+        let bob = iri("http://example.org/bob");
+        let alice_key = fixture.register(&alice);
+        let bob_key = fixture.register(&bob);
+
+        // Alice prepares a claim about a term, and Bob's claim about it is accepted first
+        let by_alice = fixture.prepare(vec![name("http://example.org/a", "A")], &alice, &alice_key);
+        fixture.claim(vec![name("http://example.org/a", "Ay")], &bob, &bob_key).unwrap();
+
+        let error = submit(by_alice, &fixture.instance, &fixture.server_key).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("as the last use of <http://example.org/a>"), "{error}");
+        assert_eq!(fixture.store().latest_claim_by(alice.as_ref()), ClaimId::NONE);
+
+        // A claim about another term is not affected by Bob's
+        fixture.claim(vec![name("http://example.org/c", "C")], &alice, &alice_key).unwrap();
     }
 
     #[test]
@@ -371,12 +416,43 @@ mod tests {
     }
 
     #[test]
-    fn sequence_ids_follow_the_clock_and_never_go_back() {
-        let now = Utc.with_ymd_and_hms(2026, 11, 23, 12, 0, 0).unwrap();
-        assert_eq!(next_sequence_id(now, None), "2026112312000000000");
-        assert_eq!(next_sequence_id(now, Some("2026112311595999900")), "2026112312000000000");
-        assert_eq!(next_sequence_id(now, Some("2026112312000000000")), "2026112312000000001");
-        assert_eq!(next_sequence_id(now, Some("2026112312000000099")), "2026112312000000100");
-        assert_eq!(next_sequence_id(now, Some("2027010100000000000")), "2027010100000000001");
+    fn accepted_claims_are_log_records_under_a_signed_checkpoint() {
+        let fixture = Fixture::new();
+        let alice = iri("http://example.org/alice");
+        let alice_key = fixture.register(&alice);
+        let signed = fixture.claim(vec![name("http://example.org/a", "A")], &alice, &alice_key).unwrap();
+
+        let log = fixture.log();
+        assert_eq!(log.size().unwrap(), 3);
+        assert_eq!(log.origin(), "example.org/log/claim");
+        let claims = log.claims(0).unwrap();
+        assert_eq!(claims[2].0, 2);
+        assert_eq!(claims[2].1.signed, signed);
+        assert_eq!(claims[2].1.actor_key, alice_key.verifying_key());
+        assert_eq!(claims[2].1.server_key, fixture.server_key.verifying_key());
+
+        assert_eq!(log.verify(&fixture.server_key.verifying_key()).unwrap(), 3);
+        assert!(log.verify(&keys::generate().verifying_key()).is_err());
+    }
+
+    #[test]
+    fn the_store_is_rebuilt_from_the_log() {
+        let fixture = Fixture::new();
+        let alice = iri("http://example.org/alice");
+        let alice_key = fixture.register(&alice);
+        fixture.claim(vec![name("http://example.org/a", "A")], &alice, &alice_key).unwrap();
+        let before = std::fs::read_to_string(&fixture.instance.storage_file).unwrap();
+
+        std::fs::write(&fixture.instance.storage_file, "").unwrap();
+        assert_eq!(projection::rebuild(&fixture.instance, &fixture.log()).unwrap(), 3);
+        assert_eq!(std::fs::read_to_string(&fixture.instance.storage_file).unwrap(), before);
+
+        // A store that fell behind is brought up to the log before the next claim is checked
+        std::fs::remove_file(&fixture.instance.storage_file).unwrap();
+        std::fs::remove_file(format!("{}.offset", fixture.instance.storage_file)).unwrap();
+        let stale = fixture.prepare(vec![name("http://example.org/b", "B")], &alice, &alice_key);
+        let error = submit(stale, &fixture.instance, &fixture.server_key).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(std::fs::read_to_string(&fixture.instance.storage_file).unwrap(), before);
     }
 }

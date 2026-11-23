@@ -79,7 +79,7 @@ pub fn handle_init_command(use_defaults: bool) {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))
         .and_then(|config| {
             let server_key = config.server_key()?;
-            create_initial_claims(&config.domain, &config.server, &config.storage_file, &server_key)
+            create_initial_claims(&config.instance(), &server_key)
         });
     if let Err(e) = claimed {
         println!("Error adding initial claim to storage: {}", e);

@@ -13,7 +13,7 @@ Scatterbase allows users to create, sign, and store "claims" about RDF triples. 
 - **Identity & Keys**: Generate and manage ED25519 key pairs for signing claims.
 - **URI Prefix Support**: Use short prefixes (e.g., `schema:name`) instead of full URIs for better readability.
 - **Base32z Encoding**: Uses the human-friendly `z-base-32` encoding for keys and hashes.
-- **Local Storage**: Simple file-based storage using the N-Triples format.
+- **Claim Log**: Accepted claims are records of an append-only, checkpointed log; an N-Triples file is derived from it.
 - **Term Lookup**: Query the storage for the latest claim associated with a specific term.
 
 ## Installation
@@ -31,7 +31,7 @@ The binary will be available at `target/release/scatterbase`.
 The repository is a Cargo workspace:
 
 - `crates/scatter-claims` — what a claim is: claim IDs and their preimages, prior-use acknowledgments, client and server signatures, and the envelope's RDF form. Pure, with no I/O.
-- `crates/scatterbase-kernel` — the library: reading triples, preparing and accepting claims against the store, keys and storage.
+- `crates/scatterbase-kernel` — the library: reading triples, preparing and accepting claims, the claim log (on `scatter-log` and `scatter-integrity`), the storage file derived from it, and keys.
 - `crates/scatterbase-cli` — the `scatterbase` binary: argument dispatch, prompts, help text and the command handlers.
 
 ## Usage
@@ -82,6 +82,18 @@ scatterbase key add --attribution https://example.org/alice
 ```
 This generates a new Ed25519 key for the actor, keeps it beside the server's key, and registers its public key in a claim by the server. `claim prepare` and `claim write` then sign that actor's claims with it. Use `--file <keyfile>` to register a key you already hold, and `--private-key <keyfile>` when preparing a claim with it. `claim submit` verifies every claim's signature against the actor's registered key.
 
+#### Claim Log
+Every accepted claim is a record of an append-only log under `data/log`, with a checkpoint signed by the server after each one. The storage file is derived from it.
+
+- **Verify the log**: check the signed checkpoint, every record and every signature.
+  ```bash
+  scatterbase log verify
+  ```
+- **Rebuild the storage file** from the log.
+  ```bash
+  scatterbase log rebuild
+  ```
+
 #### Prefix Management
 Manage URI prefixes for shorter notation:
 ```bash
@@ -118,7 +130,7 @@ Scatterbase is currently in active development. Below is the status of core comp
 
 ## Data Formats
 
-- **Storage**: `NtFileStorage` uses the standard N-Triples format.
+- **Storage**: The claim log is a `scatter-log` file store of CBOR records. The derived storage file is standard N-Triples.
 - **Claims**: Claims can be exported/imported as Turtle (`.ttl`) or N-Triples (`.nt`).
 - **Config**: Configuration is stored in a `.env` file in the project root or a custom location.
 

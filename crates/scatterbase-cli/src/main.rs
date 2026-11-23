@@ -7,6 +7,7 @@ mod config;
 mod domain;
 mod init;
 mod key;
+mod log;
 mod prefix;
 mod purge;
 mod term;
@@ -20,6 +21,7 @@ use crate::cli::{
     print_claim_help, print_prefix_help, print_purge_help, get_env_path,
 };
 use crate::key::{handle_key_add_command, print_key_help};
+use crate::log::{handle_log_rebuild_command, handle_log_verify_command, print_log_help};
 use crate::term::{handle_term_latest_command, print_term_help};
 use crate::domain::handle_domain_init_command;
 use crate::claim::{handle_claim_prepare_command, handle_claim_submit_command, handle_claim_write_command};
@@ -42,6 +44,7 @@ fn main() {
                         "triple" => print_triple_help(),
                         "claim" => print_claim_help(),
                         "key" => print_key_help(),
+                        "log" => print_log_help(),
                         "prefix" => print_prefix_help(),
                         "purge" => print_purge_help(),
                         "term" => print_term_help(),
@@ -148,6 +151,23 @@ fn main() {
                     }
                 } else {
                     print_key_help();
+                }
+            },
+            "log" => {
+                let result = match args.get(2).map(String::as_str) {
+                    Some("verify") => handle_log_verify_command(&get_env_path(&args)),
+                    Some("rebuild") => handle_log_rebuild_command(&get_env_path(&args)),
+                    Some("help") | Some("--help") | None => {
+                        print_log_help();
+                        Ok(())
+                    },
+                    Some(_) => {
+                        println!("Invalid log command. Use 'scatterbase help log' for usage information.");
+                        Ok(())
+                    },
+                };
+                if let Err(e) = result {
+                    eprintln!("Error: {}", e);
                 }
             },
             "term" => {

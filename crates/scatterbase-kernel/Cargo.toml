@@ -8,6 +8,9 @@ repository.workspace = true
 
 [dependencies]
 scatter-claims.workspace = true
+scatter-log.workspace = true
+scatter-integrity.workspace = true
+pollster.workspace = true
 rand.workspace = true
 dotenv.workspace = true
 ed25519-dalek.workspace = true

@@ -82,7 +82,7 @@ pub fn handle_key_add_command(args: &[String], env_path: &str) -> io::Result<()>
         &store,
         &server_key,
     ).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    let signed = submit(envelope, &config.domain, &config.storage_file, &server_key)?;
+    let signed = submit(envelope, &config.instance(), &server_key)?;
 
     println!("Key registered for attribution URI: {}", attribution.as_str());
     println!("Public key: {}", keys::public_key_iri(&verifying_key).as_str());

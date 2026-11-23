@@ -99,17 +99,18 @@ impl Snapshot {
                     .max()?;
                 Some((sequence, key))
             })
-            .max_by(|a, b| a.0.cmp(b.0))
+            .max_by_key(|(sequence, _)| *sequence)
             .map(|(_, key)| key)
     }
 
-    /// The sequence ID the server gave a claim, if the store holds the claim.
-    pub fn sequence_id(&self, claim: ClaimId) -> Option<&str> {
+    /// The sequence ID the server gave a claim, which is its offset in the claim log, if
+    /// the store holds the claim.
+    pub fn sequence_id(&self, claim: ClaimId) -> Option<u64> {
         let claim = NamedOrBlankNode::from(claim.iri());
         self.triples.iter()
             .filter(|t| t.subject == claim && t.predicate.as_ref() == vocab::SEQ_ID)
             .find_map(|t| match &t.object {
-                Term::Literal(literal) => Some(literal.value()),
+                Term::Literal(literal) => literal.value().parse().ok(),
                 _ => None,
             })
     }
