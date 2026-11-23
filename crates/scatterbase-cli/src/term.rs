@@ -3,12 +3,12 @@
 use std::io;
 use std::path::Path;
 
-use scatterbase_kernel::term::find_latest_claim_hash_for_term;
+use scatterbase_kernel::lookup::Snapshot;
+use scatterbase_kernel::uri::parse_iri;
 
 /// Handles the term latest command
 /// 
 /// This command returns the claim hash of the most recent claim to use the specified term.
-/// With the NT file storage driver, the most recent additions are at the bottom of the file.
 /// If the term has never been used in a claim before, the return is all zeros in Base32z encoding.
 /// 
 /// # Arguments
@@ -42,14 +42,10 @@ pub fn handle_term_latest_command(term: &str, env_path: &str) -> io::Result<()> 
         ));
     }
 
-    // Find the most recent claim hash for the term
-    match find_latest_claim_hash_for_term(&storage_file, term) {
-        Ok(claim_hash) => {
-            println!("{}", claim_hash);
-            Ok(())
-        },
-        Err(err) => Err(err),
-    }
+    // Find the most recent claim to use the term
+    let term = parse_iri(term).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    println!("{}", Snapshot::load(&storage_file)?.latest_claim_using(term.as_ref()));
+    Ok(())
 }
 
 /// Prints help information for the term command

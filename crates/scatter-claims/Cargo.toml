@@ -1,0 +1,15 @@
+[package]
+name = "scatter-claims"
+description = "Signed claims over RDF triples: claim IDs and their preimages, prior-use acknowledgments, client and server signatures, and the claim envelope's RDF form"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+oxrdf.workspace = true
+sha2.workspace = true
+ed25519-dalek.workspace = true
+data-encoding.workspace = true
+thiserror.workspace = true

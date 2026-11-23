@@ -8,8 +8,8 @@ use crate::cli::{
 };
 use scatterbase_kernel::constants::{DEFAULT_STORAGE_FILE, DEFAULT_ENV_FILE};
 use crate::domain::create_env_file;
-use scatterbase_kernel::domain::create_initial_claim;
-use scatterbase_kernel::storage::{NtFileStorage, Storage};
+use scatterbase_kernel::domain::create_initial_claims;
+use crate::config::Config;
 use scatterbase_kernel::prefix::init_prefix_file;
 
 /// Handles the "init" command
@@ -74,15 +74,14 @@ pub fn handle_init_command(use_defaults: bool) {
         return;
     }
 
-    // Initialize the storage
-    let mut storage = NtFileStorage::new(&storage_file);
-    if let Err(e) = storage.init(&domain) {
-        println!("Error initializing storage: {}", e);
-        return;
-    }
-
-    // Create the initial claim for the domain
-    if let Err(e) = create_initial_claim(&domain, &mut storage) {
+    // Create the first claims: the server's key and the domain
+    let claimed = Config::load(&env_file)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))
+        .and_then(|config| {
+            let server_key = config.server_key()?;
+            create_initial_claims(&config.domain, &config.server, &config.storage_file, &server_key)
+        });
+    if let Err(e) = claimed {
         println!("Error adding initial claim to storage: {}", e);
         return;
     }

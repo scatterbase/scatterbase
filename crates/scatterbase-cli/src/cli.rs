@@ -192,14 +192,18 @@ pub fn print_claim_help() {
     let commands = vec![
         ("prepare", "Prepare a claim envelope from triples"),
         ("submit", "Submit a prepared claim envelope to data storage"),
+        ("write", "Prepare and submit a claim in one step"),
     ];
 
     let examples = vec![
         "scatterbase claim prepare --file triples.nt > claim_envelope.ttl",
-        "scatterbase claim prepare --attribution alice --file triples.nt > claim_envelope.ttl",
+        "scatterbase claim prepare --attribution https://example.org/alice --file triples.nt > claim_envelope.ttl",
         "cat triples.nt | scatterbase claim prepare > claim_envelope.ttl",
         "scatterbase claim submit --file claim_envelope.ttl",
-        "cat claim_envelope.ttl | scatterbase claim submit"
+        "cat claim_envelope.ttl | scatterbase claim submit",
+        "scatterbase claim write --file triples.nt",
+        "scatterbase claim write --attribution https://example.org/alice --file triples.ttl",
+        "scatterbase claim prepare --attribution https://example.org/bob --private-key bob_key.private --file triples.nt"
     ];
 
     print_help_info(

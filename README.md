@@ -30,7 +30,8 @@ The binary will be available at `target/release/scatterbase`.
 
 The repository is a Cargo workspace:
 
-- `crates/scatterbase-kernel` — the library: RDF terms and triples, claim envelopes, hashing, keys and storage.
+- `crates/scatter-claims` — what a claim is: claim IDs and their preimages, prior-use acknowledgments, client and server signatures, and the envelope's RDF form. Pure, with no I/O.
+- `crates/scatterbase-kernel` — the library: reading triples, preparing and accepting claims against the store, keys and storage.
 - `crates/scatterbase-cli` — the `scatterbase` binary: argument dispatch, prompts, help text and the command handlers.
 
 ## Usage
@@ -75,10 +76,11 @@ Claims are the primary unit of signed data in Scatterbase.
   ```
 
 #### Key Management
-Add a new key to the system:
+Register a key for an actor, so that claims attributed to it are accepted:
 ```bash
-scatterbase key add --name "Alice"
+scatterbase key add --attribution https://example.org/alice
 ```
+This generates a new Ed25519 key for the actor, keeps it beside the server's key, and registers its public key in a claim by the server. `claim prepare` and `claim write` then sign that actor's claims with it. Use `--file <keyfile>` to register a key you already hold, and `--private-key <keyfile>` when preparing a claim with it. `claim submit` verifies every claim's signature against the actor's registered key.
 
 #### Prefix Management
 Manage URI prefixes for shorter notation:

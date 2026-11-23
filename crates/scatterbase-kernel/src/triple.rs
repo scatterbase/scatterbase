@@ -1,7 +1,7 @@
 //! The canonical N-Triples line of a triple.
 //!
-//! Triples are [`oxrdf::Triple`]; this module adds the one serialization the kernel hashes
-//! and stores.
+//! Triples are [`oxrdf::Triple`]; this module gives them the line the store keeps, which is
+//! the line [`scatter_claims`] hashes.
 
 use oxrdf::Triple;
 
@@ -15,7 +15,7 @@ pub trait TripleExt {
 
 impl TripleExt for Triple {
     fn to_ntriples(&self) -> String {
-        format!("{} .", self)
+        scatter_claims::id::ntriples_line(self)
     }
 }
 

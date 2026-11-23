@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 scatterbase-kernel.workspace = true
+scatter-claims.workspace = true
 oxrdf.workspace = true
 dotenv.workspace = true
 ed25519-dalek.workspace = true

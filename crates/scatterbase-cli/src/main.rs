@@ -3,6 +3,7 @@
 
 mod claim;
 mod cli;
+mod config;
 mod domain;
 mod init;
 mod key;
