@@ -82,6 +82,7 @@
 //! it.
 
 use std::io;
+use std::path::Path;
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use oxrdf::{NamedNode, Triple};
@@ -94,7 +95,8 @@ use scatter_actors::{ActorKey, ActorKind, ActorRecord, ActorSurrogates};
 use scatter_actors::time::Timestamp;
 use scatter_integrity::attest::{client_signature, founding_attestation, instance_attestation, Authority};
 use scatter_integrity::checkpoint::{host_of, tenant_origin};
-use scatter_integrity::{CheckpointStore, FileCheckpoints, KeyChain, Level, Verify};
+use scatter_integrity::bundle::{BundlePartition, PartitionRegistry};
+use scatter_integrity::{Bundle, CheckpointStore, FileCheckpoints, KeyChain, Level, Verify};
 use scatter_log::body::{Body, Part};
 use scatter_log::cbor::Value;
 use scatter_log::genesis::fresh_partition_id;
@@ -228,13 +230,17 @@ pub struct ClaimLog {
     /// The checkpoint origin of the server partition.
     server_origin: String,
     /// The mutable partition, as its `graph:mutable` record names it, and its origin.
+    /// A bundle written for publication does not hold it.
     mutable: u64,
+    has_mutable: bool,
     mutable_origin: String,
     /// The server's keys, from the `key:` records of the server partition.
     chain: KeyChain,
     /// The IRI the server attests as, and the founding record its attestations cite.
     server: NamedNode,
     authority: Authority,
+    /// The instance's domain, which a bundle does not say.
+    domain: Option<String>,
 }
 
 fn other(e: impl std::fmt::Display) -> io::Error {
@@ -402,6 +408,49 @@ impl ClaimLog {
                 format!("{} holds no server partition. Run 'scatterbase init' first.", instance.log_dir.display()),
             ));
         }
+        Self::load(
+            store,
+            &instance.log_dir,
+            &|name| Ok(origin_of(instance, name)),
+            Some(instance.server.clone()),
+            Some(instance.domain.clone()),
+        )
+    }
+
+    /// Opens a bundle that [`ClaimLog::export`] wrote, to read and verify it. Nothing is
+    /// needed but the bundle: the origins of its partitions are in its manifest, and the
+    /// server's keys and IRI are in its server partition.
+    ///
+    /// A bundle written for publication has no mutable partition, so it holds no actors
+    /// and no keys of theirs.
+    pub fn open_bundle(dir: impl AsRef<Path>) -> io::Result<Self> {
+        let dir = dir.as_ref();
+        // Opening checks the bundle's key chain, and each partition against the size and
+        // tree head the manifest states for it
+        let bundle = Bundle::open(dir).map_err(invalid)?;
+        let manifest = bundle.manifest().clone();
+        drop(bundle);
+        let store = SegmentStore::open(dir).map_err(other)?;
+        if !block_on(store.partitions()).map_err(other)?.contains(&SERVER_PARTITION) {
+            return Err(invalid(format!("{} holds no server partition", dir.display())));
+        }
+        let origin = |name: &str| -> io::Result<String> {
+            manifest.partitions.iter()
+                .find(|partition| partition.name == name)
+                .map(|partition| partition.origin.clone())
+                .ok_or_else(|| invalid(format!("the bundle does not say the origin of its {name} partition")))
+        };
+        Self::load(store, dir, &origin, None, None)
+    }
+
+    /// Reads the server partition of a store and makes a log of it.
+    fn load(
+        store: SegmentStore,
+        dir: &Path,
+        origin: &dyn Fn(&str) -> io::Result<String>,
+        server: Option<NamedNode>,
+        domain: Option<String>,
+    ) -> io::Result<Self> {
         let server_records = records(&store, SERVER_PARTITION)?;
         let chain = KeyChain::from_records(&server_records).map_err(invalid)?;
         if chain.current().is_none() {
@@ -417,19 +466,107 @@ impl ClaimLog {
                 .ok_or_else(|| invalid(format!("the server partition registers no {name} partition")))
         };
         let founding = server_records.first().ok_or_else(|| invalid("the server partition is empty"))?;
+        // The server's IRI, if it was not given, is the actor its attestations name
+        let server = match server {
+            Some(server) => server,
+            None => server_records.iter()
+                .find_map(|record| {
+                    let attestation = record.body().attestation().value().ok()??;
+                    NamedNode::new(attestation.get("actor")?.as_text()?).ok()
+                })
+                .ok_or_else(|| invalid("the server partition does not say who the server is"))?,
+        };
 
+        let mutable = partition_of(GRAPH_MUTABLE)?;
+        let has_mutable = block_on(store.partitions()).map_err(other)?.contains(&mutable);
         Ok(Self {
             partition: partition_of(GRAPH_CLAIM)?,
-            mutable: partition_of(GRAPH_MUTABLE)?,
+            mutable,
+            has_mutable,
             authority: Authority { partition: SERVER_PARTITION, offset: 0, leaf: founding.leaf() },
             store,
-            checkpoints: FileCheckpoints::new(&instance.log_dir),
-            origin: origin_of(instance, GRAPH_CLAIM),
-            mutable_origin: origin_of(instance, GRAPH_MUTABLE),
-            server_origin: origin_of(instance, GRAPH_SERVER),
+            checkpoints: FileCheckpoints::new(dir),
+            origin: origin(GRAPH_CLAIM)?,
+            mutable_origin: if has_mutable { origin(GRAPH_MUTABLE)? } else { String::new() },
+            server_origin: origin(GRAPH_SERVER)?,
             chain,
-            server: instance.server.clone(),
+            server,
+            domain,
         })
+    }
+
+    /// The IRI the server claims and attests as.
+    pub fn server(&self) -> &NamedNode {
+        &self.server
+    }
+
+    /// Writes a bundle of the log to `dest`, which must not exist or must be empty: a
+    /// directory that holds partitions of the log with every record, checkpoint and key,
+    /// and that [`ClaimLog::open_bundle`] reads and verifies with nothing else.
+    ///
+    /// A bundle for publication holds the server and claim partitions, which is everything
+    /// needed to check every claim. A backup also holds the mutable partition, which says
+    /// who the actors are and is not for publication, and can take the log's place.
+    /// Returns the names of the partitions written.
+    pub fn export(&self, dest: &Path, backup: bool) -> io::Result<Vec<String>> {
+        let domain = self.domain.as_deref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "a bundle is exported from an instance's log, not from another bundle"))?;
+        let mut names = vec![GRAPH_SERVER, GRAPH_CLAIM];
+        if backup {
+            names.push(GRAPH_MUTABLE);
+        }
+        let entries = self.graph_entries()?;
+        let mut partitions = Vec::new();
+        for name in &names {
+            let entry = entries.iter().find(|entry| entry.name == *name)
+                .ok_or_else(|| invalid(format!("the server partition registers no {name} graph")))?;
+            let lower = |policy: String| policy.to_lowercase();
+            partitions.push(BundlePartition {
+                partition: entry.partition.ok_or_else(|| invalid(format!("the {name} graph has no partition")))?,
+                name: name.to_string(),
+                origin: match *name {
+                    GRAPH_SERVER => self.server_origin.clone(),
+                    GRAPH_CLAIM => self.origin.clone(),
+                    _ => self.mutable_origin.clone(),
+                },
+                // A backup carries each partition's registry row, to be restored from
+                registry: backup.then(|| PartitionRegistry {
+                    tenant: None,
+                    graph_iri: format!("{}/graph/{name}", domain.trim_end_matches('/')),
+                    history: lower(entry.history.map(|h| format!("{h:?}")).unwrap_or_default()),
+                    integrity: lower(entry.integrity.map(|i| format!("{i:?}")).unwrap_or_default()),
+                    export: lower(format!("{:?}", entry.export)),
+                    hash: entry.hash.clone().unwrap_or_default(),
+                }),
+                head: None,
+            });
+        }
+        let key_records: Vec<Record> = records(&self.store, SERVER_PARTITION)?.into_iter()
+            .filter(KeyChain::is_key_record)
+            .collect();
+        let created = now().as_micros();
+        let scope = if backup { "backup" } else { "export" };
+        block_on(scatter_integrity::bundle::export_scoped(
+            &self.store, &self.checkpoints, &partitions, &key_records, created, dest, scope, &Default::default(),
+        )).map_err(other)?;
+        Ok(names.into_iter().map(str::to_string).collect())
+    }
+
+    /// The `graph:` entries the server partition registers, the latest for each name.
+    fn graph_entries(&self) -> io::Result<Vec<GraphEntry>> {
+        let mut entries: Vec<GraphEntry> = Vec::new();
+        for record in records(&self.store, SERVER_PARTITION)? {
+            let is_graph = record.header().key.as_deref().is_some_and(|key| key.starts_with("graph:"));
+            if record.header().payload_type != PAYLOAD_CONFIG || !is_graph {
+                continue;
+            }
+            let content = record.body().content().value().map_err(invalid)?
+                .ok_or_else(|| invalid("a graph record was erased"))?;
+            let entry = GraphEntry::from_value(content).map_err(invalid)?;
+            entries.retain(|held| held.name != entry.name);
+            entries.push(entry);
+        }
+        Ok(entries)
     }
 
     /// The size of the claim partition, which is the offset the next claim takes.
@@ -500,19 +637,7 @@ impl ClaimLog {
     /// The graphs the server partition registers, by name, each with its partition if it is
     /// a source.
     pub fn graphs(&self) -> io::Result<Vec<(String, Option<u64>)>> {
-        let mut graphs: Vec<(String, Option<u64>)> = Vec::new();
-        for record in records(&self.store, SERVER_PARTITION)? {
-            let is_graph = record.header().key.as_deref().is_some_and(|key| key.starts_with("graph:"));
-            if record.header().payload_type != PAYLOAD_CONFIG || !is_graph {
-                continue;
-            }
-            let content = record.body().content().value().map_err(invalid)?
-                .ok_or_else(|| invalid("a graph record was erased"))?;
-            let entry = GraphEntry::from_value(content).map_err(invalid)?;
-            graphs.retain(|(name, _)| *name != entry.name);
-            graphs.push((entry.name, entry.partition));
-        }
-        Ok(graphs)
+        Ok(self.graph_entries()?.into_iter().map(|entry| (entry.name, entry.partition)).collect())
     }
 
     fn require_server_key(&self, server_key: &SigningKey) -> io::Result<()> {
@@ -553,6 +678,9 @@ impl ClaimLog {
     /// its actor record was erased.
     pub fn surrogates(&self) -> io::Result<Vec<(u64, Option<NamedNode>)>> {
         let mut surrogates: Vec<(u64, Option<NamedNode>)> = Vec::new();
+        if !self.has_mutable {
+            return Ok(surrogates);
+        }
         for record in records(&self.store, self.mutable)? {
             if record.header().payload_type != PAYLOAD_ACTOR {
                 continue;
@@ -655,6 +783,9 @@ impl ClaimLog {
     pub fn all_key_records(&self) -> io::Result<Vec<(NamedNode, KeyRecord)>> {
         let surrogates = self.surrogates()?;
         let mut keys = Vec::new();
+        if !self.has_mutable {
+            return Ok(keys);
+        }
         for record in records(&self.store, self.mutable)? {
             if record.header().payload_type != PAYLOAD_KEY {
                 continue;
@@ -853,7 +984,7 @@ impl ClaimLog {
     /// offset, with an acceptance signed by a key of the server's. A claim with nothing
     /// erased must carry an actor's signature that verifies, under a key that was
     /// registered for the actor, unless an actor has been erased and with it the knowledge
-    /// of whose its keys were.
+    /// of whose its keys were, or the log is a bundle without the mutable partition.
     pub fn verify(&self, server_key: &VerifyingKey) -> io::Result<u64> {
         if *server_key != self.server_key() {
             return Err(invalid("the server partition's current key is not the expected server key"));
@@ -865,11 +996,14 @@ impl ClaimLog {
                 Vec::new()
             }
         };
-        for (name, partition, origin, is_config) in [
+        let mut partitions = vec![
             (GRAPH_SERVER, SERVER_PARTITION, &self.server_origin, true),
             (GRAPH_CLAIM, self.partition, &self.origin, false),
-            (GRAPH_MUTABLE, self.mutable, &self.mutable_origin, false),
-        ] {
+        ];
+        if self.has_mutable {
+            partitions.push((GRAPH_MUTABLE, self.mutable, &self.mutable_origin, false));
+        }
+        for (name, partition, origin, is_config) in partitions {
             let report = block_on(scatter_integrity::verify(&self.store, &self.checkpoints, &Verify {
                 partition,
                 origin,
@@ -890,7 +1024,9 @@ impl ClaimLog {
         }
 
         let key_records = self.all_key_records()?;
-        let any_erased = self.surrogates()?.iter().any(|(_, actor)| actor.is_none());
+        // Without the mutable partition, as in a bundle for publication, nothing says whose
+        // a key was either
+        let any_erased = !self.has_mutable || self.surrogates()?.iter().any(|(_, actor)| actor.is_none());
         let claims = self.claims(0)?;
         for stored in &claims {
             let offset = stored.offset;

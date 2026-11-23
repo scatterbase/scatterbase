@@ -226,6 +226,16 @@ Erasing costs what it removes. A claim with no content can no longer have its ID
 
 `reason` is one of `legal`, `privacy`, `upstream` and `operational`, and `authority` says what authorizes the erasure. The record's comment part holds a public reason, if one is given. `scatterbase log verify` accepts a missing part only where an erase record covers it.
 
+## Bundles
+
+A **bundle** is a copy of the log that verifies with nothing else: a directory holding partitions of the log with every record as the log has it, every signed checkpoint, and the chain of the server's keys. It is a `scatter-integrity` export bundle.
+
+`scatterbase log export <directory>` writes one for publication. It holds the server and claim partitions, which is everything needed to check every claim, and it says nothing of who the actors are beyond what their claims say: the mutable partition, with the actor records and key records, is left out. `scatterbase log export <directory> --backup` writes one with all three partitions, which is not for publication.
+
+`scatterbase log verify --bundle <directory> --key urn:ed25519:{key}` verifies a bundle anywhere, with no instance: the same checks as `scatterbase log verify`, against the server key the reader trusts. Without `--key` the bundle is checked against the key its own chain ends in, which shows that it is consistent and leaves it to the reader to compare that key with one they trust. In a bundle for publication, where no key records are to be had, a claim's signature is checked against the key its record says it was accepted under, and not against a registration.
+
+Parts that were erased are erased in a bundle too, with the records of their erasure.
+
 ## The store and its graphs
 
 The storage file is derived from the log: it is a `scatter-quadstore` N-Quads file holding the RDF form of every claim, below, and `scatterbase log rebuild` writes it again from the log. The instance's named graphs have IRIs `{domain}/graph/{name}`, and a claim is written into two of them:

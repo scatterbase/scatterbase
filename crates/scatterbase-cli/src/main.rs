@@ -22,7 +22,7 @@ use crate::cli::{
     print_claim_help, print_prefix_help, print_purge_help, get_env_path,
 };
 use crate::key::{handle_key_add_command, handle_key_list_command, handle_key_revoke_command, handle_key_rotate_command, print_key_help};
-use crate::log::{handle_log_rebuild_command, handle_log_verify_command, print_log_help};
+use crate::log::{handle_log_export_command, handle_log_rebuild_command, handle_log_verify_command, print_log_help};
 use crate::term::{handle_term_latest_command, print_term_help};
 use crate::domain::handle_domain_init_command;
 use crate::actor::{handle_actor_erase_command, print_actor_help};
@@ -177,7 +177,8 @@ fn main() {
             },
             "log" => {
                 let result = match args.get(2).map(String::as_str) {
-                    Some("verify") => handle_log_verify_command(&get_env_path(&args)),
+                    Some("verify") => handle_log_verify_command(&args, &get_env_path(&args)),
+                    Some("export") => handle_log_export_command(&args, &get_env_path(&args)),
                     Some("rebuild") => handle_log_rebuild_command(&get_env_path(&args)),
                     Some("help") | Some("--help") | None => {
                         print_log_help();

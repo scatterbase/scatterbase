@@ -122,6 +122,11 @@ The log under `data/log` has three partitions. The server partition holds the se
   ```bash
   scatterbase log rebuild
   ```
+- **Export a bundle**: a copy of the log that anyone can verify with nothing but the server's public key. With `--backup` it also holds who the actors are, and is not for publication.
+  ```bash
+  scatterbase log export ./bundle
+  scatterbase log verify --bundle ./bundle --key urn:ed25519:<the server's public key>
+  ```
 
 #### Prefix Management
 Manage URI prefixes for shorter notation:

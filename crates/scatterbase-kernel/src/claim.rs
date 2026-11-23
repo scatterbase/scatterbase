@@ -721,6 +721,61 @@ mod tests {
     }
 
     #[test]
+    fn a_bundle_verifies_with_nothing_but_itself() {
+        let fixture = Fixture::new();
+        let alice = iri("http://example.org/alice");
+        let alice_key = fixture.register(&alice);
+        fixture.claim(vec![name("http://example.org/s", "S")], &fixture.server, &fixture.server_key).unwrap();
+        let by_alice = fixture.claim(vec![name("http://example.org/a", "A")], &alice, &alice_key).unwrap();
+        let erased = fixture.claim(vec![name("http://example.org/b", "B")], &alice, &alice_key).unwrap();
+        erase_claim(&fixture.instance, erased.id(), &[ClaimPart::Content], PRIVACY, &fixture.server_key).unwrap();
+        // A rotation, so that the bundle has to carry a chain of two keys
+        let new = keys::generate();
+        fixture.log().rotate_server_key(&new, &fixture.server_key).unwrap();
+        let after = prepare(vec![name("http://example.org/t", "T")], fixture.server.clone(), DOMAIN, &fixture.store(), &new).unwrap();
+        submit(after, &fixture.instance, &new).unwrap();
+
+        // For publication: the server and claim partitions, and no word of who the actors are
+        let dir = tempfile::tempdir().unwrap();
+        let public = dir.path().join("public");
+        assert_eq!(fixture.log().export(&public, false).unwrap(), ["server", "claim"]);
+        let bundle = ClaimLog::open_bundle(&public).unwrap();
+        assert_eq!(bundle.server(), &fixture.server);
+        assert_eq!(bundle.server_key(), new.verifying_key());
+        assert_eq!(bundle.server_keys().len(), 2);
+        assert_eq!(bundle.verify(&new.verifying_key()).unwrap(), 4);
+        assert!(bundle.verify(&fixture.server_key.verifying_key()).is_err());
+        assert_eq!(bundle.claim(by_alice.id()).unwrap().unwrap().signed(), Some(by_alice.clone()));
+        assert_eq!(bundle.claim(erased.id()).unwrap().unwrap().erased(), [ClaimPart::Content]);
+        assert!(bundle.surrogates().unwrap().is_empty() && bundle.all_key_records().unwrap().is_empty());
+        assert_eq!(std::fs::read_dir(&public).unwrap().filter(|e| e.as_ref().unwrap().file_type().unwrap().is_dir()).count(), 2);
+
+        // A backup: everything, and it verifies the same
+        let backup = dir.path().join("backup");
+        assert_eq!(fixture.log().export(&backup, true).unwrap(), ["server", "claim", "mutable"]);
+        let bundle = ClaimLog::open_bundle(&backup).unwrap();
+        assert_eq!(bundle.verify(&new.verifying_key()).unwrap(), 4);
+        assert_eq!(bundle.surrogate_of(&alice).unwrap(), Some(1));
+        assert_eq!(bundle.current_keys(&alice).unwrap().len(), 1);
+
+        // A bundle is not written over another, nor exported from one
+        assert!(fixture.log().export(&public, false).is_err());
+        assert_eq!(bundle.export(&dir.path().join("again"), false).unwrap_err().kind(), io::ErrorKind::Unsupported);
+
+        // A bundle that was changed does not open or does not verify
+        let segment = std::fs::read_dir(&public).unwrap()
+            .filter_map(|entry| Some(entry.ok()?.path().join("00000000.seg")))
+            .find(|path| std::fs::read(path).is_ok_and(|bytes| bytes.windows(3).any(|w| w == b"\"A\"")))
+            .unwrap();
+        let mut bytes = std::fs::read(&segment).unwrap();
+        let at = bytes.windows(3).position(|w| w == b"\"A\"").unwrap();
+        bytes[at + 1] = b'Z';
+        std::fs::write(&segment, bytes).unwrap();
+        let changed = ClaimLog::open_bundle(&public).and_then(|bundle| bundle.verify(&new.verifying_key()));
+        assert!(changed.is_err());
+    }
+
+    #[test]
     fn the_store_is_rebuilt_from_the_log() {
         let fixture = Fixture::new();
         let alice = iri("http://example.org/alice");
