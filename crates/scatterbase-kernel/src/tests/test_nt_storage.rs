@@ -1,6 +1,7 @@
 use crate::storage::{Storage, MockStorage};
-use crate::uri::Uri;
-use crate::triple::Triple;
+use oxrdf::NamedNode;
+use oxrdf::Triple;
+use crate::triple::TripleExt;
 
 #[test]
 fn test_storage_drops_duplicates() {
@@ -11,10 +12,10 @@ fn test_storage_drops_duplicates() {
     mock_storage.init("http://test.example.org").expect("Failed to initialize storage");
 
     // Create a test triple
-    let subject = Uri::new("http://example.org/subject").unwrap();
-    let property = Uri::new("http://example.org/property").unwrap();
-    let object = Uri::new("http://example.org/object").unwrap();
-    let triple = Triple::new_uri_object(subject.clone(), property.clone(), object);
+    let subject = NamedNode::new("http://example.org/subject").unwrap();
+    let property = NamedNode::new("http://example.org/property").unwrap();
+    let object = NamedNode::new("http://example.org/object").unwrap();
+    let triple = Triple::new(subject.clone(), property.clone(), object);
 
     // Add the triple to the storage
     mock_storage.append(&triple).expect("Failed to append triple");
@@ -51,8 +52,8 @@ fn test_storage_drops_duplicates() {
     assert!(!claim_exists, "Claim should not exist in the storage");
 
     // Create a second test triple with the same subject and property but different object
-    let object2 = Uri::new("http://example.org/object2").unwrap();
-    let triple2 = Triple::new_uri_object(subject.clone(), property.clone(), object2);
+    let object2 = NamedNode::new("http://example.org/object2").unwrap();
+    let triple2 = Triple::new(subject.clone(), property.clone(), object2);
 
     // Add the second triple to the storage
     mock_storage.append(&triple2).expect("Failed to append second triple");

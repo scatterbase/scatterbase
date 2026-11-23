@@ -102,7 +102,7 @@ scatterbase purge
 
 Scatterbase is currently in active development. Below is the status of core components:
 
-- [x] **Core RDF Model**: Implementation of URIs, Literals, and Triples.
+- [x] **Core RDF Model**: IRIs, literals and triples are the `oxrdf` types, parsed with `oxttl`, as in the shared `scatter-*` crates.
 - [x] **N-Triples Support**: Full support for reading and writing N-Triples.
 - [x] **Turtle Support**: Support for parsing Turtle files for claim preparation.
 - [x] **ED25519 Cryptography**: Key generation, signing, and verification.

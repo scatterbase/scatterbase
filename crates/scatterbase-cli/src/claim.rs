@@ -6,13 +6,15 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use chrono::{Utc, SecondsFormat};
 
-use scatterbase_kernel::triple::Triple;
-use scatterbase_kernel::uri::Uri;
-use scatterbase_kernel::uri::rdf;
+use oxrdf::Triple;
+use scatterbase_kernel::triple::TripleExt;
+use oxrdf::{NamedNode, NamedOrBlankNode};
+use scatterbase_kernel::uri::{parse_iri, rdf};
 use scatterbase_kernel::uri::prov;
 use scatterbase_kernel::uri::scatter;
-use scatterbase_kernel::literal::Literal;
-use scatterbase_kernel::term::Term;
+use oxrdf::Literal;
+use oxrdf::Term;
+use scatterbase_kernel::term::TermExt;
 use scatterbase_kernel::crypto::{get_server_signing_key, sign_with_key, hash_string, derive_key_from_server};
 use scatterbase_kernel::prefix::read_prefixes;
 use scatterbase_kernel::storage::create_storage;
@@ -75,7 +77,13 @@ pub fn handle_claim_prepare_command(args: &[String], env_path: &str) {
         match args[i].as_str() {
             "--attribution" | "-a" => {
                 if i + 1 < args.len() {
-                    attribution = args[i + 1].clone();
+                    attribution = match parse_iri(&args[i + 1]) {
+                        Ok(uri) => uri.into_string(),
+                        Err(e) => {
+                            println!("Invalid value for --attribution: {}", e);
+                            return;
+                        }
+                    };
                     i += 2;
                 } else {
                     println!("Missing value for --attribution");
@@ -226,8 +234,8 @@ pub fn handle_claim_prepare_command(args: &[String], env_path: &str) {
     let mut uri_to_claim_hash = HashMap::new();
     for triple in &unique_triples {
         // Check subject
-        if let Some(uri) = triple.subject().as_uri() {
-            let uri_str = uri.to_string();
+        if let Some(uri) = triple.subject.as_named_node() {
+            let uri_str = uri.as_str().to_string();
             if !uri_to_claim_hash.contains_key(&uri_str) {
                 match scatterbase_kernel::term::find_latest_claim_hash_for_term(&storage_file, &uri_str) {
                     Ok(claim_hash) => {
@@ -243,8 +251,8 @@ pub fn handle_claim_prepare_command(args: &[String], env_path: &str) {
         }
 
         // Check object
-        if let Some(uri) = triple.object().as_uri() {
-            let uri_str = uri.to_string();
+        if let Some(uri) = triple.object.as_named_node() {
+            let uri_str = uri.as_str().to_string();
             if !uri_to_claim_hash.contains_key(&uri_str) {
                 match scatterbase_kernel::term::find_latest_claim_hash_for_term(&storage_file, &uri_str) {
                     Ok(claim_hash) => {
@@ -497,17 +505,17 @@ pub fn handle_claim_submit_command(args: &[String], env_path: &str) {
     let mut attribution_uri = None;
     for triple in &triples {
         // Look for triples with wasAttributedTo predicate, which should have the claim hash as subject
-        if triple.property().to_string() == prov::WAS_ATTRIBUTED_TO {
-            claim_hash_uri = Some(triple.subject().clone());
-            attribution_uri = Some(triple.object().clone());
+        if triple.predicate.as_str().to_string() == prov::WAS_ATTRIBUTED_TO {
+            claim_hash_uri = Some(triple.subject.clone());
+            attribution_uri = Some(triple.object.clone());
             break;
         }
     }
 
     // Check if the attribution URI has a public key associated with it
     if let Some(attribution_term) = &attribution_uri {
-        let attribution_str = if let Term::Uri(uri) = attribution_term {
-            uri.to_string()
+        let attribution_str = if let Term::NamedNode(uri) = attribution_term {
+            uri.as_str().to_string()
         } else {
             // If the attribution is not a URI, use a default value
             format!("{}/Server", domain)
@@ -539,8 +547,8 @@ pub fn handle_claim_submit_command(args: &[String], env_path: &str) {
 
     // Extract the claim hash from the URI
     let claim_hash = if let Some(claim_hash_uri) = &claim_hash_uri {
-        if let Term::Uri(uri) = claim_hash_uri {
-            let uri_str = uri.to_string();
+        if let NamedOrBlankNode::NamedNode(uri) = claim_hash_uri {
+            let uri_str = uri.as_str().to_string();
             if uri_str.starts_with("https://scatter.red/claim/") {
                 uri_str["https://scatter.red/claim/".len()..].to_string()
             } else {
@@ -588,8 +596,8 @@ pub fn handle_claim_submit_command(args: &[String], env_path: &str) {
         // Extract the user signature from the triples
         let mut user_signature = String::new();
         for triple in &triples {
-            if triple.property().to_string() == scatter::USER_SIGNATURE {
-                if let Term::Literal(literal) = triple.object() {
+            if triple.predicate.as_str().to_string() == scatter::USER_SIGNATURE {
+                if let Term::Literal(literal) = &triple.object {
                     let literal_str = literal.to_string();
                     if literal_str.starts_with("\"ed25519:") && literal_str.ends_with("\"") {
                         // Extract the signature part (remove the quotes and "ed25519:" prefix)
@@ -639,26 +647,14 @@ pub fn handle_claim_submit_command(args: &[String], env_path: &str) {
         let server_signature_uri = scatter::SERVER_SIGNATURE_URI.clone();
 
         // Create literals for the values
-        let seq_id_literal = Literal::new(&sequence_id);
-        let timestamp_literal = Literal::new(&timestamp);
-        let server_signature_literal = Literal::new(&format!("ed25519:{}", server_signature));
+        let seq_id_literal = Literal::new_simple_literal(&sequence_id);
+        let timestamp_literal = Literal::new_simple_literal(&timestamp);
+        let server_signature_literal = Literal::new_simple_literal(&format!("ed25519:{}", server_signature));
 
         // Create the triples
-        let seq_id_triple = if let Term::Uri(uri) = &claim_hash_uri {
-            Triple::new_literal_object(uri.clone(), seq_id_uri, seq_id_literal)
-        } else {
-            Triple::new(claim_hash_uri.clone(), seq_id_uri, Term::Literal(seq_id_literal))
-        };
-        let timestamp_triple = if let Term::Uri(uri) = &claim_hash_uri {
-            Triple::new_literal_object(uri.clone(), generated_at_time_uri, timestamp_literal)
-        } else {
-            Triple::new(claim_hash_uri.clone(), generated_at_time_uri, Term::Literal(timestamp_literal))
-        };
-        let server_signature_triple = if let Term::Uri(uri) = &claim_hash_uri {
-            Triple::new_literal_object(uri.clone(), server_signature_uri, server_signature_literal)
-        } else {
-            Triple::new(claim_hash_uri.clone(), server_signature_uri, Term::Literal(server_signature_literal))
-        };
+        let seq_id_triple = Triple::new(claim_hash_uri.clone(), seq_id_uri, seq_id_literal);
+        let timestamp_triple = Triple::new(claim_hash_uri.clone(), generated_at_time_uri, timestamp_literal);
+        let server_signature_triple = Triple::new(claim_hash_uri.clone(), server_signature_uri, server_signature_literal);
 
         // Store the triples
         if let Err(e) = storage.append(&seq_id_triple) {
@@ -726,7 +722,13 @@ pub fn handle_claim_write_command(args: &[String], env_path: &str) {
         match args[i].as_str() {
             "--attribution" | "-a" => {
                 if i + 1 < args.len() {
-                    attribution = args[i + 1].clone();
+                    attribution = match parse_iri(&args[i + 1]) {
+                        Ok(uri) => uri.into_string(),
+                        Err(e) => {
+                            println!("Invalid value for --attribution: {}", e);
+                            return;
+                        }
+                    };
                     i += 2;
                 } else {
                     println!("Missing value for --attribution");
@@ -910,153 +912,6 @@ pub fn handle_claim_write_command(args: &[String], env_path: &str) {
         return;
     }
 
-    // Store the claim metadata as triples
-    let claim_id = format!("{}/claim/{}", domain, sequence_id);
-    let claim_uri = match Uri::new(&claim_id) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating claim URI: {}", e);
-            return;
-        }
-    };
-
-    // Define predicates for claim metadata
-    let type_uri = match Uri::new(rdf::TYPE) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating type URI: {}", e);
-            return;
-        }
-    };
-    let claim_type_uri = match Uri::new(&format!("{}/Claim", domain)) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating claim type URI: {}", e);
-            return;
-        }
-    };
-    let domain_uri = match Uri::new(&format!("{}/domain", domain)) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating domain URI: {}", e);
-            return;
-        }
-    };
-    let server_pred_uri = match Uri::new(&format!("{}/server", domain)) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating server URI: {}", e);
-            return;
-        }
-    };
-    let attribution_uri = match Uri::new(&format!("{}/attribution", domain)) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating attribution URI: {}", e);
-            return;
-        }
-    };
-    let timestamp_uri = match Uri::new(&format!("{}/timestamp", domain)) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating timestamp URI: {}", e);
-            return;
-        }
-    };
-    let sequence_uri = match Uri::new(&format!("{}/sequence", domain)) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating sequence URI: {}", e);
-            return;
-        }
-    };
-    let previous_uri = match Uri::new(&format!("{}/previous", domain)) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating previous URI: {}", e);
-            return;
-        }
-    };
-    let signature_uri = match Uri::new(&format!("{}/signature", domain)) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating signature URI: {}", e);
-            return;
-        }
-    };
-    let hash_uri = match Uri::new(&format!("{}/hash", domain)) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating hash URI: {}", e);
-            return;
-        }
-    };
-    let contains_uri = match Uri::new(&format!("{}/contains", domain)) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating contains URI: {}", e);
-            return;
-        }
-    };
-
-    // Create URIs for literal values
-    let domain_value_uri = match Uri::new(&domain) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating domain value URI: {}", e);
-            return;
-        }
-    };
-    let server_value_uri = match Uri::new(&server_uri) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating server value URI: {}", e);
-            return;
-        }
-    };
-    let attribution_value_uri = match Uri::new(&attribution) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating attribution value URI: {}", e);
-            return;
-        }
-    };
-    let timestamp_value_uri = match Uri::new(&timestamp) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating timestamp value URI: {}", e);
-            return;
-        }
-    };
-    let sequence_value_uri = match Uri::new(&sequence_id) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating sequence value URI: {}", e);
-            return;
-        }
-    };
-    let previous_value_uri = match Uri::new(&prev_claim) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating previous value URI: {}", e);
-            return;
-        }
-    };
-    let signature_value_uri = match Uri::new(&signature) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating signature value URI: {}", e);
-            return;
-        }
-    };
-    let hash_value_uri = match Uri::new(&claim_hash) {
-        Ok(uri) => uri,
-        Err(e) => {
-            println!("Error creating hash value URI: {}", e);
-            return;
-        }
-    };
-
     // Use URI objects directly
     let claimed_in_uri = scatter::CLAIMED_IN_URI.clone();
     let rdf_type_uri = rdf::TYPE_URI.clone();
@@ -1084,7 +939,7 @@ pub fn handle_claim_write_command(args: &[String], env_path: &str) {
     let prev_claim_uri = scatter::claim_hash_uri(&prev_claim);
 
     // Create URI for the attribution
-    let attribution_uri = match Uri::new(&attribution) {
+    let attribution_uri = match NamedNode::new(&attribution) {
         Ok(uri) => uri,
         Err(e) => {
             println!("Error creating attribution URI: {}", e);
@@ -1094,14 +949,14 @@ pub fn handle_claim_write_command(args: &[String], env_path: &str) {
 
     // Create literal values for timestamp and sequence ID
     let datatype_datetime = rdf::XSD_DATETIME_URI.clone();
-    let timestamp_literal = Literal::with_datatype(&timestamp, datatype_datetime);
+    let timestamp_literal = Literal::new_typed_literal(&timestamp, datatype_datetime);
 
     let datatype_unsignedlong = rdf::XSD_UNSIGNED_LONG_URI.clone();
-    let sequence_id_literal = Literal::with_datatype(&sequence_id, datatype_unsignedlong);
+    let sequence_id_literal = Literal::new_typed_literal(&sequence_id, datatype_unsignedlong);
 
     // Create literal values for signatures
-    let user_signature_literal = Literal::new(&format!("ed25519:{}", signature));
-    let server_signature_literal = Literal::new(&format!("ed25519:{}", signature)); // Using the same signature for now
+    let user_signature_literal = Literal::new_simple_literal(&format!("ed25519:{}", signature));
+    let server_signature_literal = Literal::new_simple_literal(&format!("ed25519:{}", signature)); // Using the same signature for now
 
     // Store the original triples
     for triple in &triples {
@@ -1114,14 +969,14 @@ pub fn handle_claim_write_command(args: &[String], env_path: &str) {
     // Store the triples according to the required format
     for (i, triple_hash_uri) in triple_hash_uris.iter().enumerate() {
         // <tripleHash> <https://scatter.red/terms/v0/claimedIn> <ClaimHash> .
-        let claimed_in_triple = Triple::new_uri_object(triple_hash_uri.clone(), claimed_in_uri.clone(), claim_hash_uri.clone());
+        let claimed_in_triple = Triple::new(triple_hash_uri.clone(), claimed_in_uri.clone(), claim_hash_uri.clone());
         if let Err(e) = storage.append(&claimed_in_triple) {
             println!("Error storing claimedIn triple: {}", e);
             return;
         }
 
         // <tripleHash> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://scatter.red/terms/v0/Triple> .
-        let triple_type_triple = Triple::new_uri_object(triple_hash_uri.clone(), rdf_type_uri.clone(), triple_type_uri.clone());
+        let triple_type_triple = Triple::new(triple_hash_uri.clone(), rdf_type_uri.clone(), triple_type_uri.clone());
         if let Err(e) = storage.append(&triple_type_triple) {
             println!("Error storing triple type triple: {}", e);
             return;
@@ -1129,7 +984,7 @@ pub fn handle_claim_write_command(args: &[String], env_path: &str) {
     }
 
     // <SignedClaimHash> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://scatter.red/terms/v0/SignedClaim> .
-    let signed_claim_type_triple = Triple::new_uri_object(claim_hash_uri.clone(), rdf_type_uri.clone(), signed_claim_type_uri);
+    let signed_claim_type_triple = Triple::new(claim_hash_uri.clone(), rdf_type_uri.clone(), signed_claim_type_uri);
     if let Err(e) = storage.append(&signed_claim_type_triple) {
         println!("Error storing signed claim type triple: {}", e);
         return;
@@ -1137,7 +992,7 @@ pub fn handle_claim_write_command(args: &[String], env_path: &str) {
 
     // <SignedClaimHash> <https://scatter.red/terms/v0/includes> <tripleHash> .
     for triple_hash_uri in &triple_hash_uris {
-        let includes_triple = Triple::new_uri_object(claim_hash_uri.clone(), includes_uri.clone(), triple_hash_uri.clone());
+        let includes_triple = Triple::new(claim_hash_uri.clone(), includes_uri.clone(), triple_hash_uri.clone());
         if let Err(e) = storage.append(&includes_triple) {
             println!("Error storing includes triple: {}", e);
             return;
@@ -1145,21 +1000,21 @@ pub fn handle_claim_write_command(args: &[String], env_path: &str) {
     }
 
     // <SignedClaimHash> <http://www.w3.org/ns/prov#wasAttributedTo> <User> .
-    let was_attributed_to_triple = Triple::new_uri_object(claim_hash_uri.clone(), was_attributed_to_uri, attribution_uri);
+    let was_attributed_to_triple = Triple::new(claim_hash_uri.clone(), was_attributed_to_uri, attribution_uri);
     if let Err(e) = storage.append(&was_attributed_to_triple) {
         println!("Error storing wasAttributedTo triple: {}", e);
         return;
     }
 
     // <SignedClaimHash> <http://www.w3.org/ns/prov#generatedAtTime> "Timestamp"^^<http://www.w3.org/2001/XMLSchema#dateTime> .
-    let generated_at_time_triple = Triple::new_literal_object(claim_hash_uri.clone(), generated_at_time_uri, timestamp_literal.clone());
+    let generated_at_time_triple = Triple::new(claim_hash_uri.clone(), generated_at_time_uri, timestamp_literal.clone());
     if let Err(e) = storage.append(&generated_at_time_triple) {
         println!("Error storing generatedAtTime triple: {}", e);
         return;
     }
 
     // <SignedClaimHash> <https://scatter.red/terms/v0/seqID> "SequenceID"^^<http://www.w3.org/2001/XMLSchema#unsignedLong> .
-    let seq_id_triple = Triple::new_literal_object(claim_hash_uri.clone(), seq_id_uri, sequence_id_literal.clone());
+    let seq_id_triple = Triple::new(claim_hash_uri.clone(), seq_id_uri, sequence_id_literal.clone());
     if let Err(e) = storage.append(&seq_id_triple) {
         println!("Error storing seqID triple: {}", e);
         return;
@@ -1173,13 +1028,13 @@ pub fn handle_claim_write_command(args: &[String], env_path: &str) {
     // Process each original triple to create acknowledgment triples
     for (i, triple) in triples.iter().enumerate() {
         // Hash the subject term's canonical string representation
-        let subject_term_hash = hash_string(&triple.subject().to_string());
+        let subject_term_hash = hash_string(&triple.subject.to_string());
 
         // Create acknowledgment for subject
         let subject_ack_uri = scatter::ack_uri(&claim_hash, &subject_term_hash);
 
         // Ensure domain ends with trailing slash if it's a standalone domain
-        let subject_str = triple.subject().to_string();
+        let subject_str = triple.subject.to_string();
         // Remove angle brackets if it's a URI
         let subject_str = if subject_str.starts_with('<') && subject_str.ends_with('>') {
             subject_str[1..subject_str.len()-1].to_string()
@@ -1199,7 +1054,7 @@ pub fn handle_claim_write_command(args: &[String], env_path: &str) {
             subject_str.clone()
         }.split('/').last().unwrap_or("Subject").to_string();
 
-        let subject_prior_claim_uri = match Uri::new(&format!("https://scatter.red/claim/{}", subject_prev)) {
+        let subject_prior_claim_uri = match NamedNode::new(&format!("https://scatter.red/claim/{}", subject_prev)) {
             Ok(uri) => uri,
             Err(e) => {
                 println!("Error creating subject prior claim URI: {}", e);
@@ -1208,32 +1063,32 @@ pub fn handle_claim_write_command(args: &[String], env_path: &str) {
         };
 
         // <https://scatter.red/ack/ClaimHash/term/TermHash> <https://scatter.red/terms/v0/term> <Subject> .
-        let subject_term_triple = Triple::new(Term::Uri(subject_ack_uri.clone()), term_uri.clone(), triple.subject().clone());
+        let subject_term_triple = Triple::new(subject_ack_uri.clone(), term_uri.clone(), triple.subject.clone());
         if let Err(e) = storage.append(&subject_term_triple) {
             println!("Error storing subject term triple: {}", e);
             return;
         }
 
         // <https://scatter.red/ack/ClaimHash/term/TermHash> <https://scatter.red/terms/v0/priorClaim> <https://scatter.red/claim/PriorClaimSubject> .
-        let subject_prior_claim_triple = Triple::new_uri_object(subject_ack_uri.clone(), prior_claim_uri.clone(), subject_prior_claim_uri);
+        let subject_prior_claim_triple = Triple::new(subject_ack_uri.clone(), prior_claim_uri.clone(), subject_prior_claim_uri);
         if let Err(e) = storage.append(&subject_prior_claim_triple) {
             println!("Error storing subject prior claim triple: {}", e);
             return;
         }
 
         // <https://scatter.red/claim/ClaimHash> <https://scatter.red/terms/v0/acknowledgesPriorUse> <https://scatter.red/ack/ClaimHash/term/TermHash> .
-        let subject_acknowledges_triple = Triple::new_uri_object(claim_hash_uri.clone(), acknowledges_prior_use_uri.clone(), subject_ack_uri);
+        let subject_acknowledges_triple = Triple::new(claim_hash_uri.clone(), acknowledges_prior_use_uri.clone(), subject_ack_uri);
         if let Err(e) = storage.append(&subject_acknowledges_triple) {
             println!("Error storing subject acknowledges triple: {}", e);
             return;
         }
 
         // Create acknowledgment for object if it's a URI
-        if let Some(object_uri) = triple.object().as_uri() {
+        if let Some(object_uri) = triple.object.as_named_node() {
             // Hash the object term's canonical string representation
-            let object_term_hash = hash_string(&object_uri.to_string());
+            let object_term_hash = hash_string(&object_uri.as_str().to_string());
 
-            let object_ack_uri = match Uri::new(&format!("https://scatter.red/ack/{}/term/{}", claim_hash, object_term_hash)) {
+            let object_ack_uri = match NamedNode::new(&format!("https://scatter.red/ack/{}/term/{}", claim_hash, object_term_hash)) {
                 Ok(uri) => uri,
                 Err(e) => {
                     println!("Error creating object acknowledgment URI: {}", e);
@@ -1255,7 +1110,7 @@ pub fn handle_claim_write_command(args: &[String], env_path: &str) {
                 object_str.to_string()
             }.split('/').last().unwrap_or("Object").to_string();
 
-            let object_prior_claim_uri = match Uri::new(&format!("https://scatter.red/claim/{}", object_prev)) {
+            let object_prior_claim_uri = match NamedNode::new(&format!("https://scatter.red/claim/{}", object_prev)) {
                 Ok(uri) => uri,
                 Err(e) => {
                     println!("Error creating object prior claim URI: {}", e);
@@ -1264,21 +1119,21 @@ pub fn handle_claim_write_command(args: &[String], env_path: &str) {
             };
 
             // <https://scatter.red/ack/ClaimHash/term/TermHash> <https://scatter.red/terms/v0/term> <Object> .
-            let object_term_triple = Triple::new_uri_object(object_ack_uri.clone(), term_uri.clone(), object_uri.clone());
+            let object_term_triple = Triple::new(object_ack_uri.clone(), term_uri.clone(), object_uri.clone());
             if let Err(e) = storage.append(&object_term_triple) {
                 println!("Error storing object term triple: {}", e);
                 return;
             }
 
             // <https://scatter.red/ack/ClaimHash/term/TermHash> <https://scatter.red/terms/v0/priorClaim> <https://scatter.red/claim/PriorClaimObject> .
-            let object_prior_claim_triple = Triple::new_uri_object(object_ack_uri.clone(), prior_claim_uri.clone(), object_prior_claim_uri);
+            let object_prior_claim_triple = Triple::new(object_ack_uri.clone(), prior_claim_uri.clone(), object_prior_claim_uri);
             if let Err(e) = storage.append(&object_prior_claim_triple) {
                 println!("Error storing object prior claim triple: {}", e);
                 return;
             }
 
             // <https://scatter.red/claim/ClaimHash> <https://scatter.red/terms/v0/acknowledgesPriorUse> <https://scatter.red/ack/ClaimHash/term/TermHash> .
-            let object_acknowledges_triple = Triple::new_uri_object(claim_hash_uri.clone(), acknowledges_prior_use_uri.clone(), object_ack_uri);
+            let object_acknowledges_triple = Triple::new(claim_hash_uri.clone(), acknowledges_prior_use_uri.clone(), object_ack_uri);
             if let Err(e) = storage.append(&object_acknowledges_triple) {
                 println!("Error storing object acknowledges triple: {}", e);
                 return;
@@ -1287,14 +1142,14 @@ pub fn handle_claim_write_command(args: &[String], env_path: &str) {
     }
 
     // <SignedClaimHash> <https://scatter.red/terms/v0/userSignature> "ed25519:UserSignatureB32z==" .
-    let user_signature_triple = Triple::new_literal_object(claim_hash_uri.clone(), user_signature_uri, user_signature_literal.clone());
+    let user_signature_triple = Triple::new(claim_hash_uri.clone(), user_signature_uri, user_signature_literal.clone());
     if let Err(e) = storage.append(&user_signature_triple) {
         println!("Error storing userSignature triple: {}", e);
         return;
     }
 
     // <SignedClaimHash> <https://scatter.red/terms/v0/serverSignature> "ed25519:ServerSignatureB32z==" .
-    let server_signature_triple = Triple::new_literal_object(claim_hash_uri.clone(), server_signature_uri, server_signature_literal.clone());
+    let server_signature_triple = Triple::new(claim_hash_uri.clone(), server_signature_uri, server_signature_literal.clone());
     if let Err(e) = storage.append(&server_signature_triple) {
         println!("Error storing serverSignature triple: {}", e);
         return;

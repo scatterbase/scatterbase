@@ -38,9 +38,9 @@ fn test_claim_prepare_with_blank_nodes() {
     let mut found_conference = false;
 
     for triple in &triples {
-        let subject = triple.subject().to_string();
-        let property = triple.property().to_string();
-        let object = triple.object().to_string();
+        let subject = triple.subject.to_string();
+        let property = triple.predicate.as_str().to_string();
+        let object = triple.object.to_string();
 
         if subject == "<http://example.org/person/alice>" && property == "http://xmlns.com/foaf/0.1/name" {
             if object.contains("Alice") {
@@ -56,4 +56,27 @@ fn test_claim_prepare_with_blank_nodes() {
     assert!(found_alice, "Missing triple about Alice");
     assert!(found_bob, "Missing triple about Bob");
     assert!(found_conference, "Missing triple about Conference");
+}
+
+#[test]
+fn test_anonymous_blank_nodes_get_stable_labels() {
+    // `_:anon1` is written in the input, so the first unlabelled node must not take it
+    let turtle = r#"@prefix ex: <http://example.org/> .
+ex:a ex:knows [ ex:name "first" ] , [ ex:name "second" ] .
+_:anon1 ex:name "written" .
+"#;
+    let parse = || parse_turtle(BufReader::new(turtle.as_bytes()), &HashMap::new()).unwrap();
+
+    let triples = parse();
+    let subjects: Vec<String> = triples.iter()
+        .filter(|t| t.predicate.as_str() == "http://example.org/name")
+        .map(|t| t.subject.to_string())
+        .collect();
+    assert_eq!(subjects.len(), 3);
+    assert!(subjects[0].ends_with("/anon2>"), "{}", subjects[0]);
+    assert!(subjects[1].ends_with("/anon3>"), "{}", subjects[1]);
+    assert!(subjects[2].ends_with("/anon1>"), "{}", subjects[2]);
+
+    // Reading the same input again gives the same triples
+    assert_eq!(triples, parse());
 }

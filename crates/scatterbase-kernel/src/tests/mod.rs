@@ -15,13 +15,9 @@ mod test_literal;
 #[cfg(test)]
 mod test_hash_uris;
 #[cfg(test)]
-mod test_rio_literal;
-#[cfg(test)]
 mod test_claim_submit;
 #[cfg(test)]
 mod test_claim_write;
-#[cfg(test)]
-mod test_rdf_star_formatting;
 #[cfg(test)]
 mod test_prior_claim;
 #[cfg(test)]

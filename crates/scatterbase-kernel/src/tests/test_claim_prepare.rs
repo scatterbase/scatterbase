@@ -4,8 +4,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::storage::{MockStorage, Storage};
 use crate::claim::parse_turtle;
-use crate::triple::Triple;
-use crate::uri::Uri;
+use oxrdf::Triple;
+use crate::triple::TripleExt;
+use oxrdf::NamedNode;
 use crate::crypto::hash_string;
 
 #[test]
@@ -61,9 +62,9 @@ fn test_claim_prepare_with_literals() {
     let mut found_berlin_city = false;
 
     for triple in &triples {
-        let subject = triple.subject().to_string();
-        let property = triple.property().to_string();
-        let object = triple.object().to_string();
+        let subject = triple.subject.to_string();
+        let property = triple.predicate.as_str().to_string();
+        let object = triple.object.to_string();
 
         if subject == "<http://dbpedia.org/resource/Albert_Einstein>" {
             if property == "http://schema.org/birthDate" && object.contains("1879-03-14") {
@@ -130,7 +131,7 @@ fn test_claim_prepare_with_prior_claim_lookup() {
     let first_triple_hash = hash_string(&first_triple_str);
 
     // Create a triple hash URI
-    let first_triple_hash_uri = Uri::new(&format!("https://scatter.red/triple/{}", first_triple_hash)).unwrap();
+    let first_triple_hash_uri = NamedNode::new(&format!("https://scatter.red/triple/{}", first_triple_hash)).unwrap();
 
     // Create a claim hash for the first claim
     let attribution = format!("{}/user/alice", domain);
@@ -148,39 +149,39 @@ fn test_claim_prepare_with_prior_claim_lookup() {
     let first_claim_hash = hash_string(&combined);
 
     // Create a claim hash URI
-    let first_claim_hash_uri = Uri::new(&format!("https://scatter.red/claim/{}", first_claim_hash)).unwrap();
+    let first_claim_hash_uri = NamedNode::new(&format!("https://scatter.red/claim/{}", first_claim_hash)).unwrap();
 
     // Create triples for the first claim
     let mut first_claim_triples = Vec::new();
 
     // Triple type
-    let triple_type_triple = Triple::new_uri_object(
+    let triple_type_triple = Triple::new(
         first_triple_hash_uri.clone(),
-        Uri::new("http://www.w3.org/1999/02/22-rdf-syntax-ns#type").unwrap(),
-        Uri::new("https://scatter.red/terms/v0/Triple").unwrap()
+        NamedNode::new("http://www.w3.org/1999/02/22-rdf-syntax-ns#type").unwrap(),
+        NamedNode::new("https://scatter.red/terms/v0/Triple").unwrap()
     );
     first_claim_triples.push(triple_type_triple);
 
     // Triple claimed in claim
-    let triple_claimed_in_triple = Triple::new_uri_object(
+    let triple_claimed_in_triple = Triple::new(
         first_triple_hash_uri.clone(),
-        Uri::new("https://scatter.red/terms/v0/claimedIn").unwrap(),
+        NamedNode::new("https://scatter.red/terms/v0/claimedIn").unwrap(),
         first_claim_hash_uri.clone()
     );
     first_claim_triples.push(triple_claimed_in_triple);
 
     // Claim type
-    let claim_type_triple = Triple::new_uri_object(
+    let claim_type_triple = Triple::new(
         first_claim_hash_uri.clone(),
-        Uri::new("http://www.w3.org/1999/02/22-rdf-syntax-ns#type").unwrap(),
-        Uri::new("https://scatter.red/terms/v0/SignedClaim").unwrap()
+        NamedNode::new("http://www.w3.org/1999/02/22-rdf-syntax-ns#type").unwrap(),
+        NamedNode::new("https://scatter.red/terms/v0/SignedClaim").unwrap()
     );
     first_claim_triples.push(claim_type_triple);
 
     // Claim includes triple
-    let claim_includes_triple = Triple::new_uri_object(
+    let claim_includes_triple = Triple::new(
         first_claim_hash_uri.clone(),
-        Uri::new("https://scatter.red/terms/v0/includes").unwrap(),
+        NamedNode::new("https://scatter.red/terms/v0/includes").unwrap(),
         first_triple_hash_uri.clone()
     );
     first_claim_triples.push(claim_includes_triple);
@@ -210,7 +211,7 @@ fn test_claim_prepare_with_prior_claim_lookup() {
     let second_triple_hash = hash_string(&second_triple_str);
 
     // Create a triple hash URI
-    let second_triple_hash_uri = Uri::new(&format!("https://scatter.red/triple/{}", second_triple_hash)).unwrap();
+    let second_triple_hash_uri = NamedNode::new(&format!("https://scatter.red/triple/{}", second_triple_hash)).unwrap();
 
     // Create a claim hash for the second claim
     let timestamp = "2023-01-02T00:00:00Z";
@@ -226,47 +227,47 @@ fn test_claim_prepare_with_prior_claim_lookup() {
     let second_claim_hash = hash_string(&combined);
 
     // Create a claim hash URI
-    let second_claim_hash_uri = Uri::new(&format!("https://scatter.red/claim/{}", second_claim_hash)).unwrap();
+    let second_claim_hash_uri = NamedNode::new(&format!("https://scatter.red/claim/{}", second_claim_hash)).unwrap();
 
     // Create triples for the second claim
     let mut second_claim_triples = Vec::new();
 
     // Triple type
-    let triple_type_triple = Triple::new_uri_object(
+    let triple_type_triple = Triple::new(
         second_triple_hash_uri.clone(),
-        Uri::new("http://www.w3.org/1999/02/22-rdf-syntax-ns#type").unwrap(),
-        Uri::new("https://scatter.red/terms/v0/Triple").unwrap()
+        NamedNode::new("http://www.w3.org/1999/02/22-rdf-syntax-ns#type").unwrap(),
+        NamedNode::new("https://scatter.red/terms/v0/Triple").unwrap()
     );
     second_claim_triples.push(triple_type_triple);
 
     // Triple claimed in claim
-    let triple_claimed_in_triple = Triple::new_uri_object(
+    let triple_claimed_in_triple = Triple::new(
         second_triple_hash_uri.clone(),
-        Uri::new("https://scatter.red/terms/v0/claimedIn").unwrap(),
+        NamedNode::new("https://scatter.red/terms/v0/claimedIn").unwrap(),
         second_claim_hash_uri.clone()
     );
     second_claim_triples.push(triple_claimed_in_triple);
 
     // Claim type
-    let claim_type_triple = Triple::new_uri_object(
+    let claim_type_triple = Triple::new(
         second_claim_hash_uri.clone(),
-        Uri::new("http://www.w3.org/1999/02/22-rdf-syntax-ns#type").unwrap(),
-        Uri::new("https://scatter.red/terms/v0/SignedClaim").unwrap()
+        NamedNode::new("http://www.w3.org/1999/02/22-rdf-syntax-ns#type").unwrap(),
+        NamedNode::new("https://scatter.red/terms/v0/SignedClaim").unwrap()
     );
     second_claim_triples.push(claim_type_triple);
 
     // Claim includes triple
-    let claim_includes_triple = Triple::new_uri_object(
+    let claim_includes_triple = Triple::new(
         second_claim_hash_uri.clone(),
-        Uri::new("https://scatter.red/terms/v0/includes").unwrap(),
+        NamedNode::new("https://scatter.red/terms/v0/includes").unwrap(),
         second_triple_hash_uri.clone()
     );
     second_claim_triples.push(claim_includes_triple);
 
     // Claim previous claim
-    let claim_previous_claim_triple = Triple::new_uri_object(
+    let claim_previous_claim_triple = Triple::new(
         second_claim_hash_uri.clone(),
-        Uri::new("https://scatter.red/terms/v0/previousClaim").unwrap(),
+        NamedNode::new("https://scatter.red/terms/v0/previousClaim").unwrap(),
         first_claim_hash_uri.clone()
     );
     second_claim_triples.push(claim_previous_claim_triple);
@@ -281,7 +282,7 @@ fn test_claim_prepare_with_prior_claim_lookup() {
 
     // Verify that the second claim references the first claim
     let mut found_previous_claim = false;
-    println!("Expected first_claim_hash_uri: {}", first_claim_hash_uri.to_string());
+    println!("Expected first_claim_hash_uri: {}", first_claim_hash_uri.as_str().to_string());
 
     // Get all triples from the mock storage
     let all_triples = mock_storage.get_triples();
@@ -289,10 +290,10 @@ fn test_claim_prepare_with_prior_claim_lookup() {
     // Look for a triple with the second claim as subject, previousClaim as property, and first claim as object
     for triple_str in all_triples {
         println!("Checking triple: {}", triple_str);
-        if triple_str.starts_with(&format!("<{}>", second_claim_hash_uri.to_string())) &&
+        if triple_str.starts_with(&format!("<{}>", second_claim_hash_uri.as_str().to_string())) &&
            triple_str.contains("<https://scatter.red/terms/v0/previousClaim>") {
             println!("Found previousClaim triple: {}", triple_str);
-            if triple_str.contains(&format!("<{}>", first_claim_hash_uri.to_string())) {
+            if triple_str.contains(&format!("<{}>", first_claim_hash_uri.as_str().to_string())) {
                 found_previous_claim = true;
                 break;
             }

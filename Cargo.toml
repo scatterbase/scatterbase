@@ -21,7 +21,8 @@ rand_core = "0.6.4"
 sha2 = "0.10.7"
 data-encoding = "2.4.0"
 chrono = "0.4.26"
-rio_api = { git = "https://github.com/oxigraph/rio", branch = "main" }
-rio_turtle = { git = "https://github.com/oxigraph/rio", branch = "main", features = ["generalized"] }
+# RDF terms and I/O: the oxrdf family, as the shared scatter crates use
+oxrdf = { version = "0.3", features = ["rdf-12"] }
+oxttl = { version = "0.2", features = ["rdf-12"] }
 lazy_static = "1.4.0"
 tempfile = "3.8.0"

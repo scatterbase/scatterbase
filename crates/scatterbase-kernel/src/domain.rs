@@ -3,13 +3,13 @@ use std::env;
 use std::collections::HashMap;
 
 
-use crate::triple::Triple;
-use crate::uri::Uri;
+use oxrdf::Triple;
+use crate::triple::TripleExt;
+use oxrdf::NamedNode;
 use crate::uri::rdf;
 use crate::uri::prov;
 use crate::uri::scatter;
 use crate::uri::vocab;
-use crate::term::Term;
 use crate::crypto::{BASE32Z, get_server_signing_key, derive_key_from_server, sign_with_key};
 use crate::storage::{Storage, create_storage};
 use crate::claim::{hash_triple, generate_claim_hash, ClaimEnvelope, parse_turtle};
@@ -18,11 +18,11 @@ use chrono::{Utc, SecondsFormat};
 
 /// Creates the initial triple for the dataset
 pub fn create_initial_triple(domain: &str) -> Triple {
-    let subject = Uri::new(domain).unwrap();
+    let subject = NamedNode::new(domain).unwrap();
     let property = rdf::TYPE_URI.clone();
-    let object = Uri::new(&format!("{}Dataset", vocab::SCHEMA)).unwrap();
+    let object = NamedNode::new(&format!("{}Dataset", vocab::SCHEMA)).unwrap();
 
-    Triple::new_uri_object(subject, property, object)
+    Triple::new(subject, property, object)
 }
 
 /// Creates a signed claim with just the server's public key
@@ -49,25 +49,25 @@ fn create_server_key_claim(domain: &str, storage: &mut impl Storage) -> io::Resu
     let pubkey_uri = format!("urn:ed25519:{}", BASE32Z.encode(&server_key.verifying_key().to_bytes()));
 
     // Create triples for the server's public key
-    let server_uri_obj = Uri::new(&server_uri).unwrap();
-    let pubkey_uri_obj = Uri::new(&pubkey_uri).unwrap();
+    let server_uri_obj = NamedNode::new(&server_uri).unwrap();
+    let pubkey_uri_obj = NamedNode::new(&pubkey_uri).unwrap();
 
     // <domain/Server> scatter:hasPublicKey <urn:ed25519> .
-    let has_pubkey_triple = Triple::new_uri_object(
+    let has_pubkey_triple = Triple::new(
         server_uri_obj.clone(),
         scatter::HAS_PUBLIC_KEY_URI.clone(),
         pubkey_uri_obj.clone()
     );
 
     // <urn:ed25519> a scatter:publicKey .
-    let pubkey_type_triple = Triple::new_uri_object(
+    let pubkey_type_triple = Triple::new(
         pubkey_uri_obj.clone(),
         rdf::TYPE_URI.clone(),
         scatter::PUBLIC_KEY_URI.clone()
     );
 
     // <urn:ed25519> scatter:keyType scatter:ed25519 .
-    let key_type_triple = Triple::new_uri_object(
+    let key_type_triple = Triple::new(
         pubkey_uri_obj.clone(),
         scatter::KEY_TYPE_URI.clone(),
         scatter::ED25519_URI.clone()
@@ -167,11 +167,11 @@ pub fn create_initial_claim(domain: &str, storage: &mut impl Storage) -> io::Res
     let server_uri = format!("{}/Server", domain);
 
     // Create a triple declaring the domain as a scatter:Domain
-    let domain_uri = Uri::new(domain).unwrap();
-    let domain_type_triple = Triple::new_uri_object(
+    let domain_uri = NamedNode::new(domain).unwrap();
+    let domain_type_triple = Triple::new(
         domain_uri.clone(),
         rdf::TYPE_URI.clone(),
-        Uri::new(&format!("{}Domain", scatter::TERMS_BASE)).unwrap()
+        NamedNode::new(&format!("{}Domain", scatter::TERMS_BASE)).unwrap()
     );
 
     // Collect all triples for the second claim (everything except public key triples)
@@ -301,8 +301,8 @@ fn process_and_store_claim(envelope: ClaimEnvelope, server_key: &ed25519_dalek::
     let mut claim_hash_uri = None;
     for triple in &triples {
         // Look for triples with wasAttributedTo predicate, which should have the claim hash as subject
-        if triple.property().to_string() == prov::WAS_ATTRIBUTED_TO {
-            claim_hash_uri = Some(triple.subject().clone());
+        if triple.predicate.as_str().to_string() == prov::WAS_ATTRIBUTED_TO {
+            claim_hash_uri = Some(triple.subject.clone());
             break;
         }
     }
@@ -324,26 +324,14 @@ fn process_and_store_claim(envelope: ClaimEnvelope, server_key: &ed25519_dalek::
         let server_signature = sign_with_key(server_key, &data_to_sign);
 
         // Create literals for the values
-        let seq_id_literal = crate::literal::Literal::new(&sequence_id);
-        let timestamp_literal = crate::literal::Literal::new(&timestamp);
-        let server_signature_literal = crate::literal::Literal::new(&format!("ed25519:{}", server_signature));
+        let seq_id_literal = oxrdf::Literal::new_simple_literal(&sequence_id);
+        let timestamp_literal = oxrdf::Literal::new_simple_literal(&timestamp);
+        let server_signature_literal = oxrdf::Literal::new_simple_literal(&format!("ed25519:{}", server_signature));
 
         // Create the triples
-        let seq_id_triple = if let Term::Uri(uri) = &claim_hash_uri {
-            Triple::new_literal_object(uri.clone(), seq_id_uri, seq_id_literal)
-        } else {
-            Triple::new(claim_hash_uri.clone(), seq_id_uri, Term::Literal(seq_id_literal))
-        };
-        let timestamp_triple = if let Term::Uri(uri) = &claim_hash_uri {
-            Triple::new_literal_object(uri.clone(), generated_at_time_uri, timestamp_literal)
-        } else {
-            Triple::new(claim_hash_uri.clone(), generated_at_time_uri, Term::Literal(timestamp_literal))
-        };
-        let server_signature_triple = if let Term::Uri(uri) = &claim_hash_uri {
-            Triple::new_literal_object(uri.clone(), server_signature_uri, server_signature_literal)
-        } else {
-            Triple::new(claim_hash_uri.clone(), server_signature_uri, Term::Literal(server_signature_literal))
-        };
+        let seq_id_triple = Triple::new(claim_hash_uri.clone(), seq_id_uri, seq_id_literal);
+        let timestamp_triple = Triple::new(claim_hash_uri.clone(), generated_at_time_uri, timestamp_literal);
+        let server_signature_triple = Triple::new(claim_hash_uri.clone(), server_signature_uri, server_signature_literal);
 
         // Store the triples
         if let Err(e) = storage.append(&seq_id_triple) {

@@ -1,10 +1,11 @@
 use std::fs;
 use std::io::{self};
 use ed25519_dalek::SigningKey;
-use scatterbase_kernel::uri::Uri;
+use oxrdf::NamedNode;
 use scatterbase_kernel::uri::rdf;
 use scatterbase_kernel::uri::scatter;
-use scatterbase_kernel::triple::Triple;
+use oxrdf::Triple;
+use scatterbase_kernel::triple::TripleExt;
 use scatterbase_kernel::crypto::{get_server_signing_key, derive_key_from_server, BASE32Z};
 use scatterbase_kernel::claim::{ClaimEnvelope, hash_triple, generate_claim_hash};
 use std::collections::HashMap;
@@ -67,7 +68,12 @@ pub fn handle_key_add_command(args: &[String], env_path: &str) -> io::Result<()>
         match args[i].as_str() {
             "--attribution" | "-a" => {
                 if i + 1 < args.len() {
-                    attribution = args[i + 1].clone();
+                    attribution = scatterbase_kernel::uri::parse_iri(&args[i + 1])
+                        .map_err(|e| io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("Invalid value for --attribution: {}", e)
+                        ))?
+                        .into_string();
                     i += 2;
                 } else {
                     return Err(io::Error::new(
@@ -176,32 +182,32 @@ pub fn handle_key_add_command(args: &[String], env_path: &str) -> io::Result<()>
     let pubkey_uri = format!("urn:ed25519:{}", BASE32Z.encode(&verifying_key.to_bytes()));
 
     // Create the attribution URI object
-    let attribution_uri_obj = Uri::new(&attribution).unwrap();
-    let pubkey_uri_obj = Uri::new(&pubkey_uri).unwrap();
+    let attribution_uri_obj = NamedNode::new(&attribution).unwrap();
+    let pubkey_uri_obj = NamedNode::new(&pubkey_uri).unwrap();
 
     // <attribution> scatter:hasPublicKey <urn:ed25519> .
-    let has_pubkey_triple = Triple::new_uri_object(
+    let has_pubkey_triple = Triple::new(
         attribution_uri_obj.clone(),
         scatter::HAS_PUBLIC_KEY_URI.clone(),
         pubkey_uri_obj.clone()
     );
 
     // <urn:ed25519> a scatter:PublicKey .
-    let pubkey_type_triple = Triple::new_uri_object(
+    let pubkey_type_triple = Triple::new(
         pubkey_uri_obj.clone(),
         rdf::TYPE_URI.clone(),
         scatter::PUBLIC_KEY_URI.clone()
     );
 
     // <urn:ed25519> scatter:keyType scatter:ed25519 .
-    let key_type_triple = Triple::new_uri_object(
+    let key_type_triple = Triple::new(
         pubkey_uri_obj.clone(),
         scatter::KEY_TYPE_URI.clone(),
         scatter::ED25519_URI.clone()
     );
 
     // <urn:ed25519> scatter:Owner <attribution> .
-    let owner_triple = Triple::new_uri_object(
+    let owner_triple = Triple::new(
         pubkey_uri_obj.clone(),
         scatter::OWNER_URI.clone(),
         attribution_uri_obj.clone()

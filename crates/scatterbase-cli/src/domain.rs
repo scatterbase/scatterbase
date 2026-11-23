@@ -11,6 +11,7 @@ use scatterbase_kernel::utils::ensure_directory_exists;
 use scatterbase_kernel::constants::{DEFAULT_PUBLIC_KEY_FILE, DEFAULT_PREFIX_FILE, DEFAULT_PRIVATE_KEY_FILE};
 use scatterbase_kernel::crypto::{generate_ed25519_keypair, BASE32Z};
 use scatterbase_kernel::storage::Storage;
+use scatterbase_kernel::triple::TripleExt;
 use scatterbase_kernel::domain::create_initial_triple;
 use crate::cli::{prompt_for_domain, prompt_for_key_file};
 
@@ -91,6 +92,12 @@ pub fn handle_domain_init_command(env_path: &str, uri_param: Option<&str>) {
         // Prompt user for domain if not provided as parameter
         prompt_for_domain()
     };
+
+    // The domain is the subject of the first claim, so it must be an absolute URI
+    if let Err(e) = scatterbase_kernel::uri::parse_iri(&domain) {
+        println!("Invalid domain: {}", e);
+        return;
+    }
 
     // Get storage file from environment
     let storage_file = match env::var("STORAGE_FILE") {

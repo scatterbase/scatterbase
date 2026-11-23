@@ -1,8 +1,9 @@
 use std::io::BufReader;
 use std::collections::HashMap;
 
+use crate::triple::TripleExt;
 use crate::claim::parse_turtle;
-use crate::term::Term;
+use oxrdf::Term;
 use crate::tests::test_data::TEST_TRIPLES_CONTENT;
 
 #[test]
@@ -28,9 +29,9 @@ fn test_parse_triples() {
         println!("{}", triple.to_ntriples());
 
         // More detailed debugging for all triples
-        let subject = triple.subject().to_string();
-        let property = triple.property().to_string();
-        let object = triple.object();
+        let subject = triple.subject.to_string();
+        let property = triple.predicate.as_str().to_string();
+        let object = &triple.object;
 
         println!("DEBUG: Subject: '{}', Property: '{}', Object: '{}'", subject, property, object);
 
@@ -39,7 +40,7 @@ fn test_parse_triples() {
            && property == "http://schema.org/name" {
             if let Term::Literal(literal) = object {
                 println!("DEBUG: Found Einstein name: '{}', language_tag: {:?}", 
-                         literal.lexical_form(), literal.language_tag());
+                         literal.value(), literal.language());
             }
         }
     }
@@ -60,9 +61,9 @@ fn test_parse_triples() {
     let mut found_wikipedia_url = false;
 
     for triple in &triples {
-        let subject = triple.subject().to_string();
-        let property = triple.property().to_string();
-        let object = triple.object();
+        let subject = triple.subject.to_string();
+        let property = triple.predicate.as_str().to_string();
+        let object = &triple.object;
 
         // Print more detailed information about each triple for debugging
         println!("Checking triple - Subject: {}, Property: {}, Object type: {:?}", 
@@ -72,18 +73,18 @@ fn test_parse_triples() {
             if property == "http://schema.org/name" {
                 if let Term::Literal(literal) = object {
                     println!("Found Einstein name: '{}', language_tag: {:?}", 
-                             literal.lexical_form(), literal.language_tag());
-                    if literal.lexical_form() == "Albert Einstein" {
+                             literal.value(), literal.language());
+                    if literal.value() == "Albert Einstein" {
                         found_einstein_name = true;
                         println!("Matched Einstein English name!");
-                    } else if literal.lexical_form() == "アルベルト・アインシュタイン" && literal.language_tag().unwrap_or_default() == "ja" {
+                    } else if literal.value() == "アルベルト・アインシュタイン" && literal.language().unwrap_or_default() == "ja" {
                         found_einstein_japanese_name = true;
                         println!("Matched Einstein Japanese name!");
                     }
                 }
             } else if property == "http://schema.org/birthDate" {
                 if let Term::Literal(literal) = object {
-                    if literal.lexical_form() == "1879-03-14" {
+                    if literal.value() == "1879-03-14" {
                         found_einstein_birthdate = true;
                     }
                 }
@@ -93,7 +94,7 @@ fn test_parse_triples() {
                 }
             } else if property == "http://schema.org/deathDate" {
                 if let Term::Literal(literal) = object {
-                    if literal.lexical_form() == "1955-04-18" {
+                    if literal.value() == "1955-04-18" {
                         found_einstein_deathdate = true;
                     }
                 }
@@ -129,7 +130,7 @@ fn test_parse_triples() {
                 }
             } else if property == "http://schema.org/inLanguage" {
                 if let Term::Literal(literal) = object {
-                    if literal.lexical_form() == "en" {
+                    if literal.value() == "en" {
                         found_wikipedia_language = true;
                     }
                 }

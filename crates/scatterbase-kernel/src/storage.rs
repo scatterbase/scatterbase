@@ -6,7 +6,8 @@ use std::fs::{File, OpenOptions, create_dir_all};
 use std::io::{self, Write, BufRead, BufReader};
 use std::path::Path;
 
-use crate::triple::Triple;
+use oxrdf::Triple;
+use crate::triple::TripleExt;
 
 /// Trait defining the storage interface for Scatterbase
 pub trait Storage {

@@ -1,6 +1,5 @@
 // Scatterbase library modules
 pub mod uri;
-pub mod literal;
 pub mod term;
 pub mod triple;
 pub mod storage;
@@ -17,8 +16,7 @@ pub mod constants;
 pub mod tests;
 
 // Re-export commonly used items
-pub use uri::Uri;
-pub use literal::Literal;
-pub use term::Term;
-pub use triple::Triple;
+pub use oxrdf::{Literal, NamedNode, Term, Triple};
+pub use term::TermExt;
+pub use triple::TripleExt;
 pub use storage::{Storage, NtFileStorage, generate_default_domain};

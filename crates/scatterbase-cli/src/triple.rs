@@ -2,9 +2,10 @@
 
 use std::env;
 
-use scatterbase_kernel::uri::Uri;
-use scatterbase_kernel::literal::Literal;
-use scatterbase_kernel::triple::Triple;
+use oxrdf::NamedNode;
+use oxrdf::Literal;
+use oxrdf::Triple;
+use scatterbase_kernel::triple::TripleExt;
 use scatterbase_kernel::storage::{Storage, NtFileStorage};
 
 /// Handles the "triple write" command
@@ -26,7 +27,7 @@ pub fn handle_triple_write_command(subject: &str, property: &str, object: &str, 
     };
 
     // Create URI objects
-    let subject_uri = match Uri::new(subject) {
+    let subject_uri = match NamedNode::new(subject) {
         Ok(uri) => uri,
         Err(e) => {
             eprintln!("Invalid subject URI: {}", e);
@@ -34,7 +35,7 @@ pub fn handle_triple_write_command(subject: &str, property: &str, object: &str, 
         }
     };
 
-    let property_uri = match Uri::new(property) {
+    let property_uri = match NamedNode::new(property) {
         Ok(uri) => uri,
         Err(e) => {
             eprintln!("Invalid property URI: {}", e);
@@ -46,18 +47,18 @@ pub fn handle_triple_write_command(subject: &str, property: &str, object: &str, 
     let triple = if object.starts_with('"') && object.ends_with('"') {
         // It's a literal - remove the quotes and create a literal object
         let literal_value = &object[1..object.len()-1];
-        let literal = Literal::new(literal_value);
-        Triple::new_literal_object(subject_uri, property_uri, literal)
+        let literal = Literal::new_simple_literal(literal_value);
+        Triple::new(subject_uri, property_uri, literal)
     } else {
         // Try to parse as URI
-        let object_uri = match Uri::new(object) {
+        let object_uri = match NamedNode::new(object) {
             Ok(uri) => uri,
             Err(e) => {
                 eprintln!("Invalid object URI: {}", e);
                 return;
             }
         };
-        Triple::new_uri_object(subject_uri, property_uri, object_uri)
+        Triple::new(subject_uri, property_uri, object_uri)
     };
 
     // Create a storage instance

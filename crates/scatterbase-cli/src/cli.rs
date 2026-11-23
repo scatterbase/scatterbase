@@ -1,8 +1,6 @@
 use std::env;
 use std::io::{self, Write};
 use scatterbase_kernel::storage::generate_default_domain;
-use scatterbase_kernel::uri::Uri;
-use scatterbase_kernel::triple::Triple;
 use scatterbase_kernel::constants::*;
 
 // Constants are now in the constants module
@@ -260,40 +258,6 @@ pub fn print_purge_help() {
         Some(examples),
         true
     );
-}
-
-/// Prints information about a URI
-pub fn print_uri_info(uri: &Uri) {
-    println!("URI Information:");
-    println!("  Full URI: {}", uri.to_string());
-
-    if let Some(scheme) = uri.scheme() {
-        println!("  Scheme: {}", scheme);
-    }
-
-    if let Some(authority) = uri.authority() {
-        println!("  Authority: {}", authority);
-    }
-
-    if let Some(path) = uri.path() {
-        println!("  Path: {}", path);
-    }
-
-    if let Some(query) = uri.query() {
-        println!("  Query: {}", query);
-    }
-
-    if let Some(fragment) = uri.fragment() {
-        println!("  Fragment: {}", fragment);
-    }
-}
-
-/// Prints information about a triple
-pub fn print_triple_info(triple: &Triple) {
-    println!("Triple Information:");
-    println!("  Subject: {}", triple.subject().to_string());
-    println!("  Property: {}", triple.property().to_string());
-    println!("  Object: {}", triple.object().to_string());
 }
 
 /// Prompts for a domain name

@@ -29,6 +29,12 @@ pub fn handle_init_command(use_defaults: bool) {
         domain
     };
 
+    // The domain is the subject of the first claim, so it must be an absolute URI
+    if let Err(e) = scatterbase_kernel::uri::parse_iri(&domain) {
+        println!("Invalid domain: {}", e);
+        return;
+    }
+
     // Get storage file (prompt or use default)
     let storage_file = if use_defaults {
         let storage_file = DEFAULT_STORAGE_FILE.to_string();

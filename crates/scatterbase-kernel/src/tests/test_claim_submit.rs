@@ -7,8 +7,9 @@ use data_encoding::{Specification, Encoding};
 
 use crate::storage::{MockStorage, Storage};
 use crate::claim::parse_ntriples;
-use crate::triple::Triple;
-use crate::uri::Uri;
+use oxrdf::Triple;
+use crate::triple::TripleExt;
+use oxrdf::NamedNode;
 use crate::crypto::hash_string;
 
 // Define Base32z encoding specification
@@ -64,7 +65,7 @@ fn test_claim_prepare_and_submit_isolated() {
     let triple_hash = hash_string(&triple_str);
     
     // Create a triple hash URI
-    let triple_hash_uri = Uri::new(&format!("https://scatter.red/triple/{}", triple_hash)).unwrap();
+    let triple_hash_uri = NamedNode::new(&format!("https://scatter.red/triple/{}", triple_hash)).unwrap();
     
     // Create a claim hash
     let attribution = format!("{}/user/alice", domain);
@@ -82,39 +83,39 @@ fn test_claim_prepare_and_submit_isolated() {
     let claim_hash = hash_string(&combined);
     
     // Create a claim hash URI
-    let claim_hash_uri = Uri::new(&format!("https://scatter.red/claim/{}", claim_hash)).unwrap();
+    let claim_hash_uri = NamedNode::new(&format!("https://scatter.red/claim/{}", claim_hash)).unwrap();
     
     // Create triples for the claim
     let mut claim_triples = Vec::new();
     
     // Triple type
-    let triple_type_triple = Triple::new_uri_object(
+    let triple_type_triple = Triple::new(
         triple_hash_uri.clone(),
-        Uri::new("http://www.w3.org/1999/02/22-rdf-syntax-ns#type").unwrap(),
-        Uri::new("https://scatter.red/terms/v0/Triple").unwrap()
+        NamedNode::new("http://www.w3.org/1999/02/22-rdf-syntax-ns#type").unwrap(),
+        NamedNode::new("https://scatter.red/terms/v0/Triple").unwrap()
     );
     claim_triples.push(triple_type_triple);
     
     // Triple claimed in claim
-    let triple_claimed_in_triple = Triple::new_uri_object(
+    let triple_claimed_in_triple = Triple::new(
         triple_hash_uri.clone(),
-        Uri::new("https://scatter.red/terms/v0/claimedIn").unwrap(),
+        NamedNode::new("https://scatter.red/terms/v0/claimedIn").unwrap(),
         claim_hash_uri.clone()
     );
     claim_triples.push(triple_claimed_in_triple);
     
     // Claim type
-    let claim_type_triple = Triple::new_uri_object(
+    let claim_type_triple = Triple::new(
         claim_hash_uri.clone(),
-        Uri::new("http://www.w3.org/1999/02/22-rdf-syntax-ns#type").unwrap(),
-        Uri::new("https://scatter.red/terms/v0/SignedClaim").unwrap()
+        NamedNode::new("http://www.w3.org/1999/02/22-rdf-syntax-ns#type").unwrap(),
+        NamedNode::new("https://scatter.red/terms/v0/SignedClaim").unwrap()
     );
     claim_triples.push(claim_type_triple);
     
     // Claim includes triple
-    let claim_includes_triple = Triple::new_uri_object(
+    let claim_includes_triple = Triple::new(
         claim_hash_uri.clone(),
-        Uri::new("https://scatter.red/terms/v0/includes").unwrap(),
+        NamedNode::new("https://scatter.red/terms/v0/includes").unwrap(),
         triple_hash_uri.clone()
     );
     claim_triples.push(claim_includes_triple);
@@ -176,7 +177,7 @@ fn test_duplicate_claim_rejection_with_random_data() {
         let triple_hash = hash_string(&triple_str);
         
         // Create a triple hash URI
-        let triple_hash_uri = Uri::new(&format!("https://scatter.red/triple/{}", triple_hash)).unwrap();
+        let triple_hash_uri = NamedNode::new(&format!("https://scatter.red/triple/{}", triple_hash)).unwrap();
         
         // Create a claim hash
         let attribution = format!("{}/user/alice", domain);
@@ -195,39 +196,39 @@ fn test_duplicate_claim_rejection_with_random_data() {
         claim_hashes.push(claim_hash.clone());
         
         // Create a claim hash URI
-        let claim_hash_uri = Uri::new(&format!("https://scatter.red/claim/{}", claim_hash)).unwrap();
+        let claim_hash_uri = NamedNode::new(&format!("https://scatter.red/claim/{}", claim_hash)).unwrap();
         
         // Create triples for the claim
         let mut claim_triples = Vec::new();
         
         // Triple type
-        let triple_type_triple = Triple::new_uri_object(
+        let triple_type_triple = Triple::new(
             triple_hash_uri.clone(),
-            Uri::new("http://www.w3.org/1999/02/22-rdf-syntax-ns#type").unwrap(),
-            Uri::new("https://scatter.red/terms/v0/Triple").unwrap()
+            NamedNode::new("http://www.w3.org/1999/02/22-rdf-syntax-ns#type").unwrap(),
+            NamedNode::new("https://scatter.red/terms/v0/Triple").unwrap()
         );
         claim_triples.push(triple_type_triple);
         
         // Triple claimed in claim
-        let triple_claimed_in_triple = Triple::new_uri_object(
+        let triple_claimed_in_triple = Triple::new(
             triple_hash_uri.clone(),
-            Uri::new("https://scatter.red/terms/v0/claimedIn").unwrap(),
+            NamedNode::new("https://scatter.red/terms/v0/claimedIn").unwrap(),
             claim_hash_uri.clone()
         );
         claim_triples.push(triple_claimed_in_triple);
         
         // Claim type
-        let claim_type_triple = Triple::new_uri_object(
+        let claim_type_triple = Triple::new(
             claim_hash_uri.clone(),
-            Uri::new("http://www.w3.org/1999/02/22-rdf-syntax-ns#type").unwrap(),
-            Uri::new("https://scatter.red/terms/v0/SignedClaim").unwrap()
+            NamedNode::new("http://www.w3.org/1999/02/22-rdf-syntax-ns#type").unwrap(),
+            NamedNode::new("https://scatter.red/terms/v0/SignedClaim").unwrap()
         );
         claim_triples.push(claim_type_triple);
         
         // Claim includes triple
-        let claim_includes_triple = Triple::new_uri_object(
+        let claim_includes_triple = Triple::new(
             claim_hash_uri.clone(),
-            Uri::new("https://scatter.red/terms/v0/includes").unwrap(),
+            NamedNode::new("https://scatter.red/terms/v0/includes").unwrap(),
             triple_hash_uri.clone()
         );
         claim_triples.push(claim_includes_triple);

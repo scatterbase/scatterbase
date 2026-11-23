@@ -1,8 +1,9 @@
 use std::io::BufReader;
 use std::collections::HashMap;
 
+use crate::triple::TripleExt;
 use crate::claim::parse_ntriples;
-use crate::term::Term;
+use oxrdf::Term;
 use crate::tests::test_data::TEST_DATASET_CONTENT;
 
 #[test]
@@ -22,9 +23,9 @@ fn test_parse_dataset() {
         println!("{}", triple.to_ntriples());
 
         // More detailed debugging for all triples
-        let subject = triple.subject().to_string();
-        let property = triple.property().to_string();
-        let object = triple.object();
+        let subject = triple.subject.to_string();
+        let property = triple.predicate.as_str().to_string();
+        let object = &triple.object;
 
         println!("DEBUG: Subject: '{}', Property: '{}', Object: '{}'", subject, property, object);
     }
@@ -47,9 +48,9 @@ fn test_parse_dataset() {
     let mut found_claim_user_signature = false;
 
     for triple in &triples {
-        let subject = triple.subject().to_string();
-        let property = triple.property().to_string();
-        let object = triple.object();
+        let subject = triple.subject.to_string();
+        let property = triple.predicate.as_str().to_string();
+        let object = &triple.object;
 
         // Print more detailed information about each triple for debugging
         println!("Checking triple - Subject: {}, Property: {}, Object type: {:?}", 
@@ -86,13 +87,13 @@ fn test_parse_dataset() {
                 }
             } else if property == "http://www.w3.org/ns/prov#generatedAtTime" {
                 if let Term::Literal(literal) = object {
-                    if literal.lexical_form().contains("2025-07-08T00:45:05.121Z") {
+                    if literal.value().contains("2025-07-08T00:45:05.121Z") {
                         found_claim_generated_at_time = true;
                     }
                 }
             } else if property == "https://scatter.red/terms/v0/seqID" {
                 if let Term::Literal(literal) = object {
-                    if literal.lexical_form() == "2025070800450512100" {
+                    if literal.value() == "2025070800450512100" {
                         found_claim_seq_id = true;
                     }
                 }
@@ -107,7 +108,7 @@ fn test_parse_dataset() {
                 }
             } else if property == "https://scatter.red/terms/v0/userSignature" {
                 if let Term::Literal(literal) = object {
-                    if literal.lexical_form().contains("ed25519:") {
+                    if literal.value().contains("ed25519:") {
                         found_claim_user_signature = true;
                     }
                 }

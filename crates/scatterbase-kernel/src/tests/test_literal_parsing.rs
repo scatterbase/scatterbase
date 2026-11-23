@@ -1,6 +1,7 @@
 use std::io::Cursor;
 use std::collections::HashMap;
 use crate::claim::parse_ntriples;
+use crate::term::TermExt;
 
 #[test]
 fn test_parse_literal_object() {
@@ -19,9 +20,9 @@ fn test_parse_literal_object() {
 
     // Verify that the object is a literal with the correct value
     let triple = &triples[0];
-    assert!(triple.object().is_literal());
-    if let Some(literal) = triple.object().as_literal() {
-        assert_eq!(literal.lexical_form(), "Literal value");
+    assert!(triple.object.is_literal());
+    if let Some(literal) = triple.object.as_literal() {
+        assert_eq!(literal.value(), "Literal value");
     } else {
         panic!("Expected a literal object");
     }
@@ -44,13 +45,11 @@ fn test_parse_typed_literal_object() {
 
     // Verify that the object is a literal with the correct value and datatype
     let triple = &triples[0];
-    assert!(triple.object().is_literal());
-    if let Some(literal) = triple.object().as_literal() {
-        assert_eq!(literal.lexical_form(), "42");
-        assert!(literal.datatype().is_some());
-        if let Some(datatype) = literal.datatype() {
-            assert_eq!(datatype.to_string(), "http://www.w3.org/2001/XMLSchema#integer");
-        }
+    assert!(triple.object.is_literal());
+    if let Some(literal) = triple.object.as_literal() {
+        assert_eq!(literal.value(), "42");
+        let datatype = literal.datatype();
+        assert_eq!(datatype.as_str().to_string(), "http://www.w3.org/2001/XMLSchema#integer");
     } else {
         panic!("Expected a literal object");
     }
@@ -73,10 +72,10 @@ fn test_parse_language_literal_object() {
 
     // Verify that the object is a literal with the correct value and language tag
     let triple = &triples[0];
-    assert!(triple.object().is_literal());
-    if let Some(literal) = triple.object().as_literal() {
-        assert_eq!(literal.lexical_form(), "Hello");
-        assert_eq!(literal.language_tag(), Some("en"));
+    assert!(triple.object.is_literal());
+    if let Some(literal) = triple.object.as_literal() {
+        assert_eq!(literal.value(), "Hello");
+        assert_eq!(literal.language(), Some("en"));
     } else {
         panic!("Expected a literal object");
     }
@@ -99,9 +98,9 @@ fn test_parse_escaped_literal_object() {
 
     // Verify that the object is a literal with the correct value including escaped characters
     let triple = &triples[0];
-    assert!(triple.object().is_literal());
-    if let Some(literal) = triple.object().as_literal() {
-        assert_eq!(literal.lexical_form(), "Line 1\nLine 2\tTabbed\"Quoted\"\\Backslash");
+    assert!(triple.object.is_literal());
+    if let Some(literal) = triple.object.as_literal() {
+        assert_eq!(literal.value(), "Line 1\nLine 2\tTabbed\"Quoted\"\\Backslash");
     } else {
         panic!("Expected a literal object");
     }
@@ -134,13 +133,11 @@ fn test_parse_numeric_datatypes() {
 
         // Verify that the object is a literal with the correct value and datatype
         let triple = &triples[0];
-        assert!(triple.object().is_literal());
-        if let Some(literal) = triple.object().as_literal() {
-            assert_eq!(literal.lexical_form(), expected_value);
-            assert!(literal.datatype().is_some());
-            if let Some(datatype) = literal.datatype() {
-                assert_eq!(datatype.to_string(), expected_datatype);
-            }
+        assert!(triple.object.is_literal());
+        if let Some(literal) = triple.object.as_literal() {
+            assert_eq!(literal.value(), expected_value);
+            let datatype = literal.datatype();
+            assert_eq!(datatype.as_str().to_string(), expected_datatype);
         } else {
             panic!("Expected a literal object");
         }
@@ -164,10 +161,10 @@ fn test_parse_language_subtag_literal_object() {
 
     // Verify that the object is a literal with the correct value and language tag
     let triple = &triples[0];
-    assert!(triple.object().is_literal());
-    if let Some(literal) = triple.object().as_literal() {
-        assert_eq!(literal.lexical_form(), "Hello");
-        assert_eq!(literal.language_tag(), Some("en-gb"));
+    assert!(triple.object.is_literal());
+    if let Some(literal) = triple.object.as_literal() {
+        assert_eq!(literal.value(), "Hello");
+        assert_eq!(literal.language(), Some("en-gb"));
     } else {
         panic!("Expected a literal object");
     }

@@ -1,6 +1,6 @@
 use std::io::{self, BufRead, BufReader};
 use std::fs::File;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::sync::Mutex;
 use std::sync::Once;
@@ -49,74 +49,43 @@ fn get_current_claim_hash() -> String {
 /// 
 /// A new vector of triples with updated URIs
 pub fn update_blank_node_uris(triples: Vec<Triple>, claim_hash: &str) -> Vec<Triple> {
-    let mut updated_triples = Vec::new();
+    const PLACEHOLDER: &str = "/.well-known/genid/current/";
+    let actual = format!("/.well-known/genid/{}/", claim_hash);
 
-    for triple in triples {
-        let subject_uri = triple.subject().to_string();
-        let object = triple.object();
-
-        // Check if the subject URI contains the placeholder "current"
-        let updated_subject = if subject_uri.contains("/.well-known/genid/current/") {
-            // Replace "current" with the actual claim hash
-            let updated_uri_str = subject_uri.replace("/.well-known/genid/current/", &format!("/.well-known/genid/{}/", claim_hash));
-            match Uri::new(&updated_uri_str) {
-                Ok(uri) => Term::Uri(uri),
-                Err(_) => triple.subject().clone(), // Keep the original if there's an error
-            }
+    // Replace "current" with the actual claim hash, keeping the original if that fails
+    let update = |node: &NamedNode| {
+        if node.as_str().contains(PLACEHOLDER) {
+            NamedNode::new(node.as_str().replace(PLACEHOLDER, &actual)).unwrap_or_else(|_| node.clone())
         } else {
-            triple.subject().clone()
-        };
-
-        // Check if the object is a URI and contains the placeholder "current"
-        if let Term::Uri(object_uri) = object {
-            let object_uri_str = object_uri.to_string();
-            if object_uri_str.contains("/.well-known/genid/current/") {
-                // Replace "current" with the actual claim hash
-                let updated_uri_str = object_uri_str.replace("/.well-known/genid/current/", &format!("/.well-known/genid/{}/", claim_hash));
-                match Uri::new(&updated_uri_str) {
-                    Ok(uri) => {
-                        // Create a new triple with the updated subject and object
-                        if let Term::Uri(subject_uri) = &updated_subject {
-                            updated_triples.push(Triple::new_uri_object(subject_uri.clone(), triple.property().clone(), uri));
-                        } else {
-                            updated_triples.push(Triple::new(updated_subject.clone(), triple.property().clone(), Term::Uri(uri)));
-                        }
-                    },
-                    Err(_) => {
-                        // Keep the original object if there's an error
-                        if let Term::Uri(subject_uri) = &updated_subject {
-                            updated_triples.push(Triple::new_uri_object(subject_uri.clone(), triple.property().clone(), object_uri.clone()));
-                        } else {
-                            updated_triples.push(Triple::new(updated_subject.clone(), triple.property().clone(), Term::Uri(object_uri.clone())));
-                        }
-                    }
-                }
-            } else {
-                // Object URI doesn't contain the placeholder, just update the subject
-                if let Term::Uri(subject_uri) = &updated_subject {
-                    updated_triples.push(Triple::new_uri_object(subject_uri.clone(), triple.property().clone(), object_uri.clone()));
-                } else {
-                    updated_triples.push(Triple::new(updated_subject.clone(), triple.property().clone(), Term::Uri(object_uri.clone())));
-                }
-            }
-        } else {
-            // Object is a literal or triple, just update the subject
-            updated_triples.push(Triple::new(updated_subject, triple.property().clone(), object.clone()));
+            node.clone()
         }
-    }
+    };
 
-    updated_triples
+    triples.into_iter().map(|triple| {
+        let subject = match &triple.subject {
+            NamedOrBlankNode::NamedNode(node) => update(node).into(),
+            blank => blank.clone(),
+        };
+        let object = match &triple.object {
+            Term::NamedNode(node) => update(node).into(),
+            other => other.clone(),
+        };
+        Triple::new(subject, triple.predicate, object)
+    }).collect()
 }
-use rio_api::parser::TriplesParser;
-use rio_turtle::{NTriplesParser, TurtleParser};
 
-use crate::triple::Triple;
-use crate::uri::Uri;
-use crate::uri::rdf;
+use oxrdf::{BlankNode, NamedOrBlankNode};
+use oxttl::{NTriplesParser, TurtleParser};
+
+use oxrdf::Triple;
+use crate::triple::TripleExt;
+use oxrdf::NamedNode;
+use crate::uri::{parse_iri, rdf};
 use crate::uri::prov;
 use crate::uri::scatter;
-use crate::literal::Literal;
-use crate::term::Term;
+use oxrdf::Literal;
+use oxrdf::Term;
+use crate::term::TermExt;
 use crate::crypto::{get_server_signing_key, sign_with_key, hash_string};
 use crate::prefix::expand_prefix;
 use crate::storage::create_storage;
@@ -129,6 +98,29 @@ fn uri_to_prefixed(uri: &str, prefixes: &[(&str, &str)]) -> String {
         }
     }
     format!("<{}>", uri)
+}
+
+/// The order triples are written in: by subject, then predicate, then object, with IRI
+/// objects before literals.
+fn compare_triples(a: &Triple, b: &Triple) -> std::cmp::Ordering {
+    fn rank(term: &Term) -> u8 {
+        match term {
+            Term::NamedNode(_) => 0,
+            Term::Literal(_) => 1,
+            _ => 2,
+        }
+    }
+    fn key(term: &Term) -> String {
+        match term {
+            Term::NamedNode(node) => node.as_str().to_string(),
+            other => other.to_string(),
+        }
+    }
+
+    a.subject.to_string().cmp(&b.subject.to_string())
+        .then_with(|| a.predicate.as_str().cmp(b.predicate.as_str()))
+        .then_with(|| rank(&a.object).cmp(&rank(&b.object)))
+        .then_with(|| key(&a.object).cmp(&key(&b.object)))
 }
 
 /// Represents a ClaimEnvelope, which is the client-side part of a claim
@@ -182,9 +174,9 @@ impl ClaimEnvelope {
         // Create URI for the attribution
         let attribution_uri = if self.attribution.is_empty() {
             // Use a default URI when attribution is empty
-            Uri::new("https://scatter.red/anonymous").unwrap()
+            NamedNode::new("https://scatter.red/anonymous").unwrap()
         } else {
-            Uri::new(&self.attribution).unwrap()
+            NamedNode::new(&self.attribution).unwrap()
         };
 
         // Add the original triples
@@ -195,15 +187,15 @@ impl ClaimEnvelope {
         // Add the triples according to the required format
         for (i, triple_hash_uri) in triple_hash_uris.iter().enumerate() {
             // <tripleHash> <https://scatter.red/terms/v0/claimedIn> <ClaimHash> .
-            let claimed_in_triple = Triple::new_uri_object(triple_hash_uri.clone(), claimed_in_uri.clone(), claim_hash_uri.clone());
+            let claimed_in_triple = Triple::new(triple_hash_uri.clone(), claimed_in_uri.clone(), claim_hash_uri.clone());
             result.push(claimed_in_triple);
 
             // <tripleHash> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://scatter.red/terms/v0/ClaimTriple> .
-            let claim_triple_type_triple = Triple::new_uri_object(triple_hash_uri.clone(), rdf_type_uri.clone(), claim_triple_type_uri.clone());
+            let claim_triple_type_triple = Triple::new(triple_hash_uri.clone(), rdf_type_uri.clone(), claim_triple_type_uri.clone());
             result.push(claim_triple_type_triple);
 
             // <tripleHash> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/1999/02/22-rdf-syntax-ns#Statement> .
-            let statement_type_triple = Triple::new_uri_object(triple_hash_uri.clone(), rdf_type_uri.clone(), statement_type_uri.clone());
+            let statement_type_triple = Triple::new(triple_hash_uri.clone(), rdf_type_uri.clone(), statement_type_uri.clone());
             result.push(statement_type_triple);
 
             // Add RDF reification triples for each original triple
@@ -211,55 +203,53 @@ impl ClaimEnvelope {
                 let triple = &self.triples[i];
 
                 // <tripleHash> rdf:subject <s> .
-                let subject_triple = Triple::new(
-                    Term::Uri(triple_hash_uri.clone()),
+                let subject_triple = Triple::new(triple_hash_uri.clone(),
                     rdf::SUBJECT_URI.clone(),
-                    triple.subject().clone()
+                    triple.subject.clone()
                 );
                 result.push(subject_triple);
 
                 // <tripleHash> rdf:predicate <p> .
-                let predicate_triple = Triple::new_uri_object(
+                let predicate_triple = Triple::new(
                     triple_hash_uri.clone(),
                     rdf::PREDICATE_URI.clone(),
-                    triple.property().clone()
+                    triple.predicate.clone()
                 );
                 result.push(predicate_triple);
 
                 // <tripleHash> rdf:object <o> .
-                let object_triple = Triple::new(
-                    Term::Uri(triple_hash_uri.clone()),
+                let object_triple = Triple::new(triple_hash_uri.clone(),
                     rdf::OBJECT_URI.clone(),
-                    triple.object().clone()
+                    triple.object.clone()
                 );
                 result.push(object_triple);
             }
         }
 
         // <SignedClaimHash> <http://www.w3.org/ns/prov#wasAttributedTo> <User> .
-        let was_attributed_to_triple = Triple::new_uri_object(claim_hash_uri.clone(), was_attributed_to_uri.clone(), attribution_uri.clone());
+        let was_attributed_to_triple = Triple::new(claim_hash_uri.clone(), was_attributed_to_uri.clone(), attribution_uri.clone());
         result.push(was_attributed_to_triple);
 
         // <SignedClaimHash> <https://scatter.red/terms/v0/previousClaim> <PreviousClaim> .
-        let previous_claim_triple = Triple::new_uri_object(claim_hash_uri.clone(), previous_claim_uri.clone(), prev_claim_uri.clone());
+        let previous_claim_triple = Triple::new(claim_hash_uri.clone(), previous_claim_uri.clone(), prev_claim_uri.clone());
         result.push(previous_claim_triple);
 
         // <SignedClaimHash> <https://scatter.red/terms/v0/userSignature> "ed25519:UserSignatureB32z==" .
-        let user_signature_literal = Literal::new(&format!("ed25519:{}", self.signature));
-        let user_signature_triple = Triple::new_literal_object(claim_hash_uri.clone(), user_signature_uri.clone(), user_signature_literal);
+        let user_signature_literal = Literal::new_simple_literal(&format!("ed25519:{}", self.signature));
+        let user_signature_triple = Triple::new(claim_hash_uri.clone(), user_signature_uri.clone(), user_signature_literal);
         result.push(user_signature_triple);
 
         // Create "ack" triples for each subject and object in the original triples
         for (i, triple) in self.triples.iter().enumerate() {
             // Hash the subject term's canonical string representation
-            let subject_term_hash = hash_string(&triple.subject().to_string());
+            let subject_term_hash = hash_string(&triple.subject.to_string());
 
             // Create acknowledgment for subject
             let subject_ack_uri = scatter::ack_uri(&self.claim_hash, &subject_term_hash);
 
             // Get the prior claim hash for this subject, if available
-            let subject_prior_claim_hash = if let Some(uri) = triple.subject().as_uri() {
-                let uri_str = uri.to_string();
+            let subject_prior_claim_hash = if let Some(uri) = triple.subject.as_named_node() {
+                let uri_str = uri.as_str().to_string();
                 if let Some(claim_hash) = self.uri_to_claim_hash.get(&uri_str) {
                     claim_hash.clone()
                 } else if let Some(claim_hash) = self.uri_to_claim_hash.get(&format!("<{}>", uri_str)) {
@@ -274,26 +264,26 @@ impl ClaimEnvelope {
             let subject_prior_claim_uri = scatter::claim_hash_uri(&subject_prior_claim_hash);
 
             // <https://scatter.red/ack/ClaimHash/term/TermHash> <https://scatter.red/terms/v0/term> <Subject> .
-            let subject_term_triple = Triple::new(Term::Uri(subject_ack_uri.clone()), term_uri.clone(), triple.subject().clone());
+            let subject_term_triple = Triple::new(subject_ack_uri.clone(), term_uri.clone(), triple.subject.clone());
             result.push(subject_term_triple);
 
             // <https://scatter.red/ack/ClaimHash/term/TermHash> <https://scatter.red/terms/v0/priorClaim> <https://scatter.red/claim/PriorClaimSubject> .
-            let subject_prior_claim_triple = Triple::new_uri_object(subject_ack_uri.clone(), prior_claim_uri.clone(), subject_prior_claim_uri);
+            let subject_prior_claim_triple = Triple::new(subject_ack_uri.clone(), prior_claim_uri.clone(), subject_prior_claim_uri);
             result.push(subject_prior_claim_triple);
 
             // <https://scatter.red/claim/ClaimHash> <https://scatter.red/terms/v0/acknowledgesPriorUse> <https://scatter.red/ack/ClaimHash/term/TermHash> .
-            let subject_acknowledges_triple = Triple::new_uri_object(claim_hash_uri.clone(), acknowledges_prior_use_uri.clone(), subject_ack_uri);
+            let subject_acknowledges_triple = Triple::new(claim_hash_uri.clone(), acknowledges_prior_use_uri.clone(), subject_ack_uri);
             result.push(subject_acknowledges_triple);
 
             // Create acknowledgment for object if it's a URI
-            if let Some(object_uri) = triple.object().as_uri() {
+            if let Some(object_uri) = triple.object.as_named_node() {
                 // Hash the object term's canonical string representation
-                let object_term_hash = hash_string(&object_uri.to_string());
+                let object_term_hash = hash_string(&object_uri.as_str().to_string());
 
                 let object_ack_uri = scatter::ack_uri(&self.claim_hash, &object_term_hash);
 
                 // Get the prior claim hash for this object, if available
-                let object_uri_str = object_uri.to_string();
+                let object_uri_str = object_uri.as_str().to_string();
                 let object_prior_claim_hash = if let Some(claim_hash) = self.uri_to_claim_hash.get(&object_uri_str) {
                     claim_hash.clone()
                 } else if let Some(claim_hash) = self.uri_to_claim_hash.get(&format!("<{}>", object_uri_str)) {
@@ -305,15 +295,15 @@ impl ClaimEnvelope {
                 let object_prior_claim_uri = scatter::claim_hash_uri(&object_prior_claim_hash);
 
                 // <https://scatter.red/ack/ClaimHash/term/TermHash> <https://scatter.red/terms/v0/term> <Object> .
-                let object_term_triple = Triple::new_uri_object(object_ack_uri.clone(), term_uri.clone(), object_uri.clone());
+                let object_term_triple = Triple::new(object_ack_uri.clone(), term_uri.clone(), object_uri.clone());
                 result.push(object_term_triple);
 
                 // <https://scatter.red/ack/ClaimHash/term/TermHash> <https://scatter.red/terms/v0/priorClaim> <https://scatter.red/claim/PriorClaimObject> .
-                let object_prior_claim_triple = Triple::new_uri_object(object_ack_uri.clone(), prior_claim_uri.clone(), object_prior_claim_uri);
+                let object_prior_claim_triple = Triple::new(object_ack_uri.clone(), prior_claim_uri.clone(), object_prior_claim_uri);
                 result.push(object_prior_claim_triple);
 
                 // <https://scatter.red/claim/ClaimHash> <https://scatter.red/terms/v0/acknowledgesPriorUse> <https://scatter.red/ack/ClaimHash/term/TermHash> .
-                let object_acknowledges_triple = Triple::new_uri_object(claim_hash_uri.clone(), acknowledges_prior_use_uri.clone(), object_ack_uri);
+                let object_acknowledges_triple = Triple::new(claim_hash_uri.clone(), acknowledges_prior_use_uri.clone(), object_ack_uri);
                 result.push(object_acknowledges_triple);
             }
         }
@@ -335,38 +325,7 @@ impl ClaimEnvelope {
         }
 
         // Define the comparison function for sorting triples
-        let triple_cmp = |a: &Triple, b: &Triple| {
-            // First compare subjects
-            let subject_cmp = a.subject().to_string().cmp(&b.subject().to_string());
-            if subject_cmp != std::cmp::Ordering::Equal {
-                return subject_cmp;
-            }
-
-            // Then compare properties
-            let property_cmp = a.property().to_string().cmp(&b.property().to_string());
-            if property_cmp != std::cmp::Ordering::Equal {
-                return property_cmp;
-            }
-
-            // Finally compare objects
-            match (a.object(), b.object()) {
-                (Term::Uri(a_uri), Term::Uri(b_uri)) => {
-                    a_uri.to_string().cmp(&b_uri.to_string())
-                },
-                (Term::Literal(a_lit), Term::Literal(b_lit)) => {
-                    a_lit.to_string().cmp(&b_lit.to_string())
-                },
-                (Term::Uri(_), Term::Literal(_)) => std::cmp::Ordering::Less,
-                (Term::Literal(_), Term::Uri(_)) => std::cmp::Ordering::Greater,
-                (Term::Triple(_), Term::Uri(_)) => std::cmp::Ordering::Greater,
-                (Term::Triple(_), Term::Literal(_)) => std::cmp::Ordering::Greater,
-                (Term::Uri(_), Term::Triple(_)) => std::cmp::Ordering::Less,
-                (Term::Literal(_), Term::Triple(_)) => std::cmp::Ordering::Less,
-                (Term::Triple(a_triple), Term::Triple(b_triple)) => {
-                    a_triple.to_ntriples().cmp(&b_triple.to_ntriples())
-                },
-            }
-        };
+        let triple_cmp = compare_triples;
 
         // Sort all unique triples for consistent ordering
         unique_triples.sort_by(triple_cmp);
@@ -387,7 +346,7 @@ impl ClaimEnvelope {
         // Find and remove the user signature triple from metadata triples
         let mut user_signature_triple = None;
         metadata_triples.retain(|triple| {
-            let is_user_signature = triple.property().to_string() == scatter::USER_SIGNATURE;
+            let is_user_signature = triple.predicate.as_str().to_string() == scatter::USER_SIGNATURE;
             if is_user_signature {
                 user_signature_triple = Some(*triple);
             }
@@ -429,38 +388,7 @@ impl ClaimEnvelope {
         }
 
         // Define the comparison function for sorting triples
-        let triple_cmp = |a: &Triple, b: &Triple| {
-            // First compare subjects
-            let subject_cmp = a.subject().to_string().cmp(&b.subject().to_string());
-            if subject_cmp != std::cmp::Ordering::Equal {
-                return subject_cmp;
-            }
-
-            // Then compare properties
-            let property_cmp = a.property().to_string().cmp(&b.property().to_string());
-            if property_cmp != std::cmp::Ordering::Equal {
-                return property_cmp;
-            }
-
-            // Finally compare objects
-            match (a.object(), b.object()) {
-                (Term::Uri(a_uri), Term::Uri(b_uri)) => {
-                    a_uri.to_string().cmp(&b_uri.to_string())
-                },
-                (Term::Literal(a_lit), Term::Literal(b_lit)) => {
-                    a_lit.to_string().cmp(&b_lit.to_string())
-                },
-                (Term::Uri(_), Term::Literal(_)) => std::cmp::Ordering::Less,
-                (Term::Literal(_), Term::Uri(_)) => std::cmp::Ordering::Greater,
-                (Term::Triple(_), Term::Uri(_)) => std::cmp::Ordering::Greater,
-                (Term::Triple(_), Term::Literal(_)) => std::cmp::Ordering::Greater,
-                (Term::Uri(_), Term::Triple(_)) => std::cmp::Ordering::Less,
-                (Term::Literal(_), Term::Triple(_)) => std::cmp::Ordering::Less,
-                (Term::Triple(a_triple), Term::Triple(b_triple)) => {
-                    a_triple.to_ntriples().cmp(&b_triple.to_ntriples())
-                },
-            }
-        };
+        let triple_cmp = compare_triples;
 
         // Sort all unique triples for consistent ordering
         unique_triples.sort_by(triple_cmp);
@@ -497,7 +425,7 @@ impl ClaimEnvelope {
         // Find and remove the user signature triple from metadata triples
         let mut user_signature_triple = None;
         metadata_triples.retain(|triple| {
-            let is_user_signature = triple.property().to_string() == scatter::USER_SIGNATURE;
+            let is_user_signature = triple.predicate.as_str().to_string() == scatter::USER_SIGNATURE;
             if is_user_signature {
                 user_signature_triple = Some(*triple);
             }
@@ -507,19 +435,16 @@ impl ClaimEnvelope {
         // Add original triples using prefixes
         for triple in &original_triples {
             // For original triples, we want to format the subject as a URI, not as a quoted triple
-            let subject = match triple.subject() {
-                Term::Uri(uri) => uri_to_prefixed(&uri.to_string(), &prefixes),
-                // If the subject is a Triple, we should never get here for original triples
-                // But just in case, format it as a quoted triple
-                Term::Triple(triple) => format!("<<{}>>", triple.to_ntriples()),
-                _ => triple.subject().to_string(),
+            let subject = match &triple.subject {
+                NamedOrBlankNode::NamedNode(uri) => uri_to_prefixed(&uri.as_str().to_string(), &prefixes),
+                NamedOrBlankNode::BlankNode(blank) => blank.to_string(),
             };
-            let property = uri_to_prefixed(&triple.property().to_string(), &prefixes);
+            let property = uri_to_prefixed(&triple.predicate.as_str().to_string(), &prefixes);
 
-            let object = match triple.object() {
-                Term::Uri(uri) => uri_to_prefixed(&uri.to_string(), &prefixes),
+            let object = match &triple.object {
+                Term::NamedNode(uri) => uri_to_prefixed(&uri.as_str().to_string(), &prefixes),
                 Term::Literal(literal) => literal.to_string(),
-                Term::Triple(triple) => format!("<<{}>>", triple.to_ntriples()),
+                other => other.to_string(),
             };
 
             result.push_str(&format!("{} {} {} .\n", subject, property, object));
@@ -528,10 +453,10 @@ impl ClaimEnvelope {
         // Add metadata triples using prefixes
         for triple in metadata_triples {
             // For metadata triples, we need to check the type of the subject
-            let subject = match triple.subject() {
-                Term::Uri(uri) => {
+            let subject = match &triple.subject {
+                NamedOrBlankNode::NamedNode(uri) => {
                     // Format all URIs in the subject position of metadata triples as regular URIs
-                    let uri_str = uri.to_string();
+                    let uri_str = uri.as_str().to_string();
                     if uri_str.starts_with("https://scatter.red/ack/") {
                         // Use full URI for acknowledgments as slashes are not legal in CURIEs
                         format!("<{}>", uri_str)
@@ -543,15 +468,14 @@ impl ClaimEnvelope {
                         uri_to_prefixed(&uri_str, &prefixes)
                     }
                 },
-                Term::Triple(triple) => format!("<<{}>>", triple.to_ntriples()),
-                _ => triple.subject().to_string(),
+                NamedOrBlankNode::BlankNode(blank) => blank.to_string(),
             };
-            let property = uri_to_prefixed(&triple.property().to_string(), &prefixes);
+            let property = uri_to_prefixed(&triple.predicate.as_str().to_string(), &prefixes);
 
-            let object = match triple.object() {
-                Term::Uri(uri) => uri_to_prefixed(&uri.to_string(), &prefixes),
+            let object = match &triple.object {
+                Term::NamedNode(uri) => uri_to_prefixed(&uri.as_str().to_string(), &prefixes),
                 Term::Literal(literal) => literal.to_string(),
-                Term::Triple(triple) => format!("<<{}>>", triple.to_ntriples()),
+                other => other.to_string(),
             };
 
             result.push_str(&format!("{} {} {} .\n", subject, property, object));
@@ -560,24 +484,23 @@ impl ClaimEnvelope {
         // Add the user signature triple last, if it exists
         if let Some(triple) = user_signature_triple {
             // Format the user signature triple
-            let subject = match triple.subject() {
-                Term::Uri(uri) => {
-                    let uri_str = uri.to_string();
+            let subject = match &triple.subject {
+                NamedOrBlankNode::NamedNode(uri) => {
+                    let uri_str = uri.as_str().to_string();
                     if uri_str.starts_with("https://scatter.red/claim/") {
                         format!("scatter_claim:{}", &uri_str["https://scatter.red/claim/".len()..])
                     } else {
                         uri_to_prefixed(&uri_str, &prefixes)
                     }
                 },
-                Term::Triple(triple) => format!("<<{}>>", triple.to_ntriples()),
-                _ => triple.subject().to_string(),
+                NamedOrBlankNode::BlankNode(blank) => blank.to_string(),
             };
-            let property = uri_to_prefixed(&triple.property().to_string(), &prefixes);
+            let property = uri_to_prefixed(&triple.predicate.as_str().to_string(), &prefixes);
 
-            let object = match triple.object() {
-                Term::Uri(uri) => uri_to_prefixed(&uri.to_string(), &prefixes),
+            let object = match &triple.object {
+                Term::NamedNode(uri) => uri_to_prefixed(&uri.as_str().to_string(), &prefixes),
                 Term::Literal(literal) => literal.to_string(),
-                Term::Triple(triple) => format!("<<{}>>", triple.to_ntriples()),
+                other => other.to_string(),
             };
 
             result.push_str(&format!("{} {} {} .\n", subject, property, object));
@@ -614,56 +537,25 @@ impl SignedClaim {
 
         // Add the sequence ID triple
         let sequence_id_uri = scatter::SEQ_ID_URI.clone();
-        let string_datatype = Uri::new("http://www.w3.org/2001/XMLSchema#string").unwrap();
-        let sequence_id_literal = Literal::with_datatype(&self.sequence_id, string_datatype);
-        let sequence_id_triple = Triple::new_literal_object(claim_hash_uri.clone(), sequence_id_uri, sequence_id_literal);
+        let string_datatype = NamedNode::new("http://www.w3.org/2001/XMLSchema#string").unwrap();
+        let sequence_id_literal = Literal::new_typed_literal(&self.sequence_id, string_datatype);
+        let sequence_id_triple = Triple::new(claim_hash_uri.clone(), sequence_id_uri, sequence_id_literal);
         server_triples.push(sequence_id_triple);
 
         // Add the timestamp triple
         let generated_at_time_uri = prov::GENERATED_AT_TIME_URI.clone();
         let datatype_datetime = rdf::XSD_DATETIME_URI.clone();
-        let timestamp_literal = Literal::with_datatype(&self.timestamp, datatype_datetime);
-        let timestamp_triple = Triple::new_literal_object(claim_hash_uri.clone(), generated_at_time_uri, timestamp_literal);
+        let timestamp_literal = Literal::new_typed_literal(&self.timestamp, datatype_datetime);
+        let timestamp_triple = Triple::new(claim_hash_uri.clone(), generated_at_time_uri, timestamp_literal);
         server_triples.push(timestamp_triple);
 
         // Create the server signature triple (but don't add it to server_triples yet)
         let server_signature_uri = scatter::SERVER_SIGNATURE_URI.clone();
-        let server_signature_literal = Literal::new(&format!("ed25519:{}", self.server_signature));
-        let server_signature_triple = Triple::new_literal_object(claim_hash_uri.clone(), server_signature_uri, server_signature_literal);
+        let server_signature_literal = Literal::new_simple_literal(&format!("ed25519:{}", self.server_signature));
+        let server_signature_triple = Triple::new(claim_hash_uri.clone(), server_signature_uri, server_signature_literal);
 
         // Sort server triples for consistent ordering
-        server_triples.sort_by(|a, b| {
-            // First compare subjects
-            let subject_cmp = a.subject().to_string().cmp(&b.subject().to_string());
-            if subject_cmp != std::cmp::Ordering::Equal {
-                return subject_cmp;
-            }
-
-            // Then compare properties
-            let property_cmp = a.property().to_string().cmp(&b.property().to_string());
-            if property_cmp != std::cmp::Ordering::Equal {
-                return property_cmp;
-            }
-
-            // Finally compare objects
-            match (a.object(), b.object()) {
-                (Term::Uri(a_uri), Term::Uri(b_uri)) => {
-                    a_uri.to_string().cmp(&b_uri.to_string())
-                },
-                (Term::Literal(a_lit), Term::Literal(b_lit)) => {
-                    a_lit.to_string().cmp(&b_lit.to_string())
-                },
-                (Term::Uri(_), Term::Literal(_)) => std::cmp::Ordering::Less,
-                (Term::Literal(_), Term::Uri(_)) => std::cmp::Ordering::Greater,
-                (Term::Triple(_), Term::Uri(_)) => std::cmp::Ordering::Greater,
-                (Term::Triple(_), Term::Literal(_)) => std::cmp::Ordering::Greater,
-                (Term::Uri(_), Term::Triple(_)) => std::cmp::Ordering::Less,
-                (Term::Literal(_), Term::Triple(_)) => std::cmp::Ordering::Less,
-                (Term::Triple(a_triple), Term::Triple(b_triple)) => {
-                    a_triple.to_ntriples().cmp(&b_triple.to_ntriples())
-                },
-            }
-        });
+        server_triples.sort_by(compare_triples);
 
         // Define prefixes
         let prefixes = [
@@ -676,48 +568,46 @@ impl SignedClaim {
 
         // Add server triples using prefixes
         for triple in &server_triples {
-            let subject = match triple.subject() {
-                Term::Uri(uri) => {
-                    let uri_str = uri.to_string();
+            let subject = match &triple.subject {
+                NamedOrBlankNode::NamedNode(uri) => {
+                    let uri_str = uri.as_str().to_string();
                     if uri_str.starts_with("https://scatter.red/claim/") {
                         format!("scatter_claim:{}", &uri_str["https://scatter.red/claim/".len()..])
                     } else {
                         uri_to_prefixed(&uri_str, &prefixes)
                     }
                 },
-                Term::Triple(triple) => format!("<<{}>>", triple.to_ntriples()),
-                _ => triple.subject().to_string(),
+                NamedOrBlankNode::BlankNode(blank) => blank.to_string(),
             };
-            let property = uri_to_prefixed(&triple.property().to_string(), &prefixes);
+            let property = uri_to_prefixed(&triple.predicate.as_str().to_string(), &prefixes);
 
-            let object = match triple.object() {
-                Term::Uri(uri) => uri_to_prefixed(&uri.to_string(), &prefixes),
+            let object = match &triple.object {
+                Term::NamedNode(uri) => uri_to_prefixed(&uri.as_str().to_string(), &prefixes),
                 Term::Literal(literal) => literal.to_string(),
-                Term::Triple(triple) => format!("<<{}>>", triple.to_ntriples()),
+                other => other.to_string(),
             };
 
             result.push_str(&format!("{} {} {} .\n", subject, property, object));
         }
 
         // Add the server signature triple last
-        let subject = match server_signature_triple.subject() {
-            Term::Uri(uri) => {
-                let uri_str = uri.to_string();
+        let subject = match &server_signature_triple.subject {
+            NamedOrBlankNode::NamedNode(uri) => {
+                let uri_str = uri.as_str().to_string();
                 if uri_str.starts_with("https://scatter.red/claim/") {
                     format!("scatter_claim:{}", &uri_str["https://scatter.red/claim/".len()..])
                 } else {
                     uri_to_prefixed(&uri_str, &prefixes)
                 }
             },
-            Term::Triple(triple) => format!("<<{}>>", triple.to_ntriples()),
-            _ => server_signature_triple.subject().to_string(),
+            NamedOrBlankNode::BlankNode(blank) => blank.to_string(),
         };
-        let property = uri_to_prefixed(&server_signature_triple.property().to_string(), &prefixes);
+        let property = uri_to_prefixed(&server_signature_triple.predicate.as_str().to_string(), &prefixes);
 
-        let object = match server_signature_triple.object() {
-            Term::Uri(uri) => uri_to_prefixed(&uri.to_string(), &prefixes),
+        let object = match &server_signature_triple.object {
+            Term::NamedNode(uri) => uri_to_prefixed(&uri.as_str().to_string(), &prefixes),
             Term::Literal(literal) => literal.to_string(),
-            Term::Triple(triple) => format!("<<{}>>", triple.to_ntriples()),
+            other => other.to_string(),
         };
 
         result.push_str(&format!("{} {} {} .\n", subject, property, object));
@@ -741,56 +631,25 @@ impl SignedClaim {
 
         // Add the sequence ID triple
         let sequence_id_uri = scatter::SEQ_ID_URI.clone();
-        let string_datatype = Uri::new("http://www.w3.org/2001/XMLSchema#string").unwrap();
-        let sequence_id_literal = Literal::with_datatype(&self.sequence_id, string_datatype);
-        let sequence_id_triple = Triple::new_literal_object(claim_hash_uri.clone(), sequence_id_uri, sequence_id_literal);
+        let string_datatype = NamedNode::new("http://www.w3.org/2001/XMLSchema#string").unwrap();
+        let sequence_id_literal = Literal::new_typed_literal(&self.sequence_id, string_datatype);
+        let sequence_id_triple = Triple::new(claim_hash_uri.clone(), sequence_id_uri, sequence_id_literal);
         server_triples.push(sequence_id_triple);
 
         // Add the timestamp triple
         let generated_at_time_uri = prov::GENERATED_AT_TIME_URI.clone();
         let datatype_datetime = rdf::XSD_DATETIME_URI.clone();
-        let timestamp_literal = Literal::with_datatype(&self.timestamp, datatype_datetime);
-        let timestamp_triple = Triple::new_literal_object(claim_hash_uri.clone(), generated_at_time_uri, timestamp_literal);
+        let timestamp_literal = Literal::new_typed_literal(&self.timestamp, datatype_datetime);
+        let timestamp_triple = Triple::new(claim_hash_uri.clone(), generated_at_time_uri, timestamp_literal);
         server_triples.push(timestamp_triple);
 
         // Create the server signature triple (but don't add it to server_triples yet)
         let server_signature_uri = scatter::SERVER_SIGNATURE_URI.clone();
-        let server_signature_literal = Literal::new(&format!("ed25519:{}", self.server_signature));
-        let server_signature_triple = Triple::new_literal_object(claim_hash_uri.clone(), server_signature_uri, server_signature_literal);
+        let server_signature_literal = Literal::new_simple_literal(&format!("ed25519:{}", self.server_signature));
+        let server_signature_triple = Triple::new(claim_hash_uri.clone(), server_signature_uri, server_signature_literal);
 
         // Sort server triples for consistent ordering
-        server_triples.sort_by(|a, b| {
-            // First compare subjects
-            let subject_cmp = a.subject().to_string().cmp(&b.subject().to_string());
-            if subject_cmp != std::cmp::Ordering::Equal {
-                return subject_cmp;
-            }
-
-            // Then compare properties
-            let property_cmp = a.property().to_string().cmp(&b.property().to_string());
-            if property_cmp != std::cmp::Ordering::Equal {
-                return property_cmp;
-            }
-
-            // Finally compare objects
-            match (a.object(), b.object()) {
-                (Term::Uri(a_uri), Term::Uri(b_uri)) => {
-                    a_uri.to_string().cmp(&b_uri.to_string())
-                },
-                (Term::Literal(a_lit), Term::Literal(b_lit)) => {
-                    a_lit.to_string().cmp(&b_lit.to_string())
-                },
-                (Term::Uri(_), Term::Literal(_)) => std::cmp::Ordering::Less,
-                (Term::Literal(_), Term::Uri(_)) => std::cmp::Ordering::Greater,
-                (Term::Triple(_), Term::Uri(_)) => std::cmp::Ordering::Greater,
-                (Term::Triple(_), Term::Literal(_)) => std::cmp::Ordering::Greater,
-                (Term::Uri(_), Term::Triple(_)) => std::cmp::Ordering::Less,
-                (Term::Literal(_), Term::Triple(_)) => std::cmp::Ordering::Less,
-                (Term::Triple(a_triple), Term::Triple(b_triple)) => {
-                    a_triple.to_ntriples().cmp(&b_triple.to_ntriples())
-                },
-            }
-        });
+        server_triples.sort_by(compare_triples);
 
         // Add server triples in N-Triples format
         for triple in &server_triples {
@@ -887,7 +746,7 @@ pub fn handle_claim_submit_envelope(envelope: ClaimEnvelope, storage_file: &str)
     let server_signature = sign_with_key(&server_key, &data_to_sign);
 
     // Create the claim hash URI
-    let claim_hash_uri = Uri::new(&format!("https://scatter.red/claim/{}", claim_hash)).unwrap();
+    let claim_hash_uri = NamedNode::new(&format!("https://scatter.red/claim/{}", claim_hash)).unwrap();
 
     // Create server-side triples (sequence ID, timestamp, server signature)
     let seq_id_uri = scatter::SEQ_ID_URI.clone();
@@ -895,22 +754,22 @@ pub fn handle_claim_submit_envelope(envelope: ClaimEnvelope, storage_file: &str)
     let server_signature_uri = scatter::SERVER_SIGNATURE_URI.clone();
 
     // Create literals for the values
-    let seq_id_literal = Literal::new(&sequence_id);
-    let timestamp_literal = Literal::new(&timestamp);
-    let server_signature_literal = Literal::new(&format!("ed25519:{}", server_signature));
+    let seq_id_literal = Literal::new_simple_literal(&sequence_id);
+    let timestamp_literal = Literal::new_simple_literal(&timestamp);
+    let server_signature_literal = Literal::new_simple_literal(&format!("ed25519:{}", server_signature));
 
     // Create the triples
-    let seq_id_triple = Triple::new_literal_object(
+    let seq_id_triple = Triple::new(
         claim_hash_uri.clone(),
         seq_id_uri,
         seq_id_literal
     );
-    let timestamp_triple = Triple::new_literal_object(
+    let timestamp_triple = Triple::new(
         claim_hash_uri.clone(),
         generated_at_time_uri,
         timestamp_literal
     );
-    let server_signature_triple = Triple::new_literal_object(
+    let server_signature_triple = Triple::new(
         claim_hash_uri.clone(),
         server_signature_uri,
         server_signature_literal
@@ -1011,7 +870,7 @@ pub fn read_triples_from_stdin(prefixes: &HashMap<String, String>) -> io::Result
 /// # Returns
 /// 
 /// A URI that is globally unique for the blank node
-fn canonicalize_blank_node(blank_node_id: &str, domain: &str) -> Uri {
+fn canonicalize_blank_node(blank_node_id: &str, domain: &str) -> NamedNode {
     // Extract protocol and domain parts
     let protocol_end = domain.find("://").unwrap_or(0);
     let protocol = if protocol_end > 0 {
@@ -1033,290 +892,184 @@ fn canonicalize_blank_node(blank_node_id: &str, domain: &str) -> Uri {
     let uri_str = format!("{}://{}/{}",
                          protocol, domain_part, format!(".well-known/genid/{}/{}", claim_id, blank_node_id));
 
-    Uri::new(&uri_str).unwrap_or_else(|_| {
+    NamedNode::new(&uri_str).unwrap_or_else(|_| {
         // If there's an error creating the URI, use a fallback
         let fallback = format!("{}://{}/{}",
                               protocol, domain_part, format!(".well-known/genid/{}/{}", claim_id, "unknown"));
-        Uri::new(&fallback).expect("Failed to create fallback URI for blank node")
+        NamedNode::new(&fallback).expect("Failed to create fallback URI for blank node")
     })
 }
 
 /// Parses N-Triples format
 pub fn parse_ntriples<R: BufRead>(reader: R, prefixes: &HashMap<String, String>) -> io::Result<Vec<Triple>> {
-    let mut triples = Vec::new();
-
     // Get domain from environment for blank node canonicalization
     let domain = env::var("DOMAIN").unwrap_or_else(|_| "https://scatter.red".to_string());
 
-    let mut parser = NTriplesParser::new(reader);
-
-    parser.parse_all(&mut |rio_triple| {
-        // Convert RioTriple to our Triple format
-        let subject = match rio_triple.subject {
-            rio_api::model::Subject::NamedNode(node) => {
-                let uri_str = expand_prefix(node.iri, prefixes);
-                match Uri::new(&uri_str) {
-                    Ok(uri) => uri,
-                    Err(e) => {
-                        println!("Error parsing subject URI: {}", e);
-                        return Ok(());
-                    }
-                }
-            },
-            rio_api::model::Subject::BlankNode(node) => {
-                // Canonicalize the blank node
-                canonicalize_blank_node(node.id, &domain)
-            },
-            _ => {
-                println!("Unknown subject type, not supported");
-                return Ok(());
-            }
-        };
-
-        let property = match Uri::new(rio_triple.predicate.iri) {
-            Ok(uri) => uri,
-            Err(e) => {
-                println!("Error parsing predicate URI: {}", e);
-                return Ok(());
-            }
-        };
-
-        // Check if this is a user signature triple
-        let is_user_signature = property.to_string() == "https://scatter.red/terms/v0/userSignature";
-
-        let object = match rio_triple.object {
-            rio_api::model::Term::NamedNode(node) => {
-                let uri_str = expand_prefix(node.iri, prefixes);
-                match Uri::new(&uri_str) {
-                    Ok(uri) => uri,
-                    Err(e) => {
-                        println!("Error parsing object URI: {}", e);
-                        return Ok(());
-                    }
-                }
-            },
-            rio_api::model::Term::BlankNode(node) => {
-                // Canonicalize the blank node
-                canonicalize_blank_node(node.id, &domain)
-            },
-            rio_api::model::Term::Literal(literal) if is_user_signature => {
-                // For user signature triples, use the actual signature value
-                let literal_obj = match literal {
-                    rio_api::model::Literal::Simple { value } => {
-                        // Simple literal
-                        Literal::new(value)
-                    },
-                    rio_api::model::Literal::LanguageTaggedString { value, language } => {
-                        // Language-tagged literal
-                        Literal::with_language(value, language)
-                    },
-                    rio_api::model::Literal::Typed { value, datatype } => {
-                        // Typed literal
-                        let datatype_uri = match Uri::new(datatype.iri) {
-                            Ok(uri) => uri,
-                            Err(e) => {
-                                println!("Error parsing datatype URI: {}", e);
-                                return Ok(());
-                            }
-                        };
-                        Literal::with_datatype(value, datatype_uri)
-                    },
-                };
-                triples.push(Triple::new_literal_object(subject.clone(), property.clone(), literal_obj));
-                return Ok(());
-            },
-            rio_api::model::Term::Literal(literal) => {
-                // Handle regular literals with their actual values
-                let literal_obj = match literal {
-                    rio_api::model::Literal::Simple { value } => {
-                        // Simple literal
-                        Literal::new(value)
-                    },
-                    rio_api::model::Literal::LanguageTaggedString { value, language } => {
-                        // Language-tagged literal
-                        Literal::with_language(value, language)
-                    },
-                    rio_api::model::Literal::Typed { value, datatype } => {
-                        // Typed literal
-                        let datatype_uri = match Uri::new(datatype.iri) {
-                            Ok(uri) => uri,
-                            Err(e) => {
-                                println!("Error parsing datatype URI: {}", e);
-                                return Ok(());
-                            }
-                        };
-                        Literal::with_datatype(value, datatype_uri)
-                    },
-                };
-                triples.push(Triple::new_literal_object(subject.clone(), property.clone(), literal_obj));
-                return Ok(());
-            },
-            _ => {
-                // Just log a message but continue processing
-                println!("Note: Unknown term type in object position, skipping");
-                return Ok(());
-            }
-        };
-
-        triples.push(Triple::new_uri_object(subject, property, object));
-        Ok(())
-    }).map_err(|e: Box<dyn std::error::Error + Send + Sync>| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-    Ok(triples)
+    convert_parsed(NTriplesParser::new().for_reader(reader), prefixes, &domain)
 }
 
 /// Parses Turtle format
 pub fn parse_turtle<R: BufRead>(reader: R, prefixes: &HashMap<String, String>) -> io::Result<Vec<Triple>> {
-    let mut triples = Vec::new();
-
     // Get domain from environment for blank node canonicalization
     let domain = env::var("DOMAIN").unwrap_or_else(|_| "https://scatter.red".to_string());
 
-    // Create a TurtleParser with RDF-star support enabled
-    // The "generalized" feature should be enabled in Cargo.toml
-    let mut parser = TurtleParser::new(reader, None);
+    convert_parsed(TurtleParser::new().for_reader(reader), prefixes, &domain)
+}
 
-    parser.parse_all(&mut |rio_triple| {
-        // Convert RioTriple to our Triple format
-        let subject = match rio_triple.subject {
-            rio_api::model::Subject::NamedNode(node) => {
-                let uri_str = expand_prefix(node.iri, prefixes);
-                match Uri::new(&uri_str) {
-                    Ok(uri) => uri,
-                    Err(e) => {
-                        println!("Error parsing subject URI: {}", e);
-                        return Ok(());
-                    }
+/// Converts parsed triples to the form the kernel stores: every IRI with its prefix
+/// expanded, every blank node replaced by its skolem IRI, and every quoted triple replaced
+/// by its triple hash IRI.
+///
+/// A quoted triple arrives from the parser in its RDF 1.2 form, a reifier with an
+/// `rdf:reifies` triple whose object is the triple term. The reifier becomes the triple hash
+/// IRI of the quoted triple and the `rdf:reifies` triple itself is dropped, so
+/// `<< s p o >> q v` is stored as `<https://scatter.red/triple/{hash}> q v`.
+///
+/// A triple with a term that cannot be converted is reported and skipped.
+fn convert_parsed<E>(
+    parsed: impl Iterator<Item = Result<Triple, E>>,
+    prefixes: &HashMap<String, String>,
+    domain: &str,
+) -> io::Result<Vec<Triple>>
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let parsed = parsed
+        .collect::<Result<Vec<Triple>, E>>()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let parsed = label_anonymous_nodes(parsed);
+
+    let mut triples = Vec::new();
+    // Reifiers of quoted triples, by blank node ID, and the triple hash IRI of each.
+    let mut reifiers: HashMap<String, NamedNode> = HashMap::new();
+
+    for parsed_triple in parsed {
+
+        if parsed_triple.predicate.as_str() == rdf::REIFIES {
+            if let (NamedOrBlankNode::BlankNode(reifier), Term::Triple(quoted)) = (&parsed_triple.subject, &parsed_triple.object) {
+                match convert_triple(quoted, prefixes, domain, &reifiers) {
+                    Ok(quoted) => {
+                        reifiers.insert(reifier.as_str().to_string(), scatter::triple_hash_uri(&hash_triple(&quoted)));
+                    },
+                    Err(e) => println!("Error parsing quoted triple: {}", e),
                 }
-            },
-            rio_api::model::Subject::BlankNode(node) => {
-                // Canonicalize the blank node
-                canonicalize_blank_node(node.id, &domain)
-            },
-            rio_api::model::Subject::Triple(triple) => {
-                // Handle quoted triple in subject position (RDF-star)
-                // Convert the triple to a standard triple hash URI
-                let triple_str = triple.to_string();
-                let triple_hash = crate::crypto::hash_string(&triple_str);
-                let hash_uri_str = format!("https://scatter.red/triple/{}", triple_hash);
-                match Uri::new(&hash_uri_str) {
-                    Ok(uri) => uri,
-                    Err(e) => {
-                        println!("Error creating URI for quoted triple in subject position: {}", e);
-                        return Ok(());
-                    }
-                }
-            },
-            _ => {
-                println!("Unknown subject type, not supported");
-                return Ok(());
+                continue;
             }
-        };
+        }
 
-        let property = match Uri::new(rio_triple.predicate.iri) {
-            Ok(uri) => uri,
-            Err(e) => {
-                println!("Error parsing predicate URI: {}", e);
-                return Ok(());
-            }
-        };
-
-        // Check if this is a user signature triple
-        let is_user_signature = property.to_string() == "https://scatter.red/terms/v0/userSignature";
-
-        let object = match rio_triple.object {
-            rio_api::model::Term::NamedNode(node) => {
-                let uri_str = expand_prefix(node.iri, prefixes);
-                match Uri::new(&uri_str) {
-                    Ok(uri) => uri,
-                    Err(e) => {
-                        println!("Error parsing object URI: {}", e);
-                        return Ok(());
-                    }
-                }
-            },
-            rio_api::model::Term::BlankNode(node) => {
-                // Canonicalize the blank node
-                canonicalize_blank_node(node.id, &domain)
-            },
-            rio_api::model::Term::Literal(literal) if is_user_signature => {
-                // For user signature triples, use the actual signature value
-                let literal_obj = match literal {
-                    rio_api::model::Literal::Simple { value } => {
-                        // Simple literal
-                        Literal::new(value)
-                    },
-                    rio_api::model::Literal::LanguageTaggedString { value, language } => {
-                        // Language-tagged literal
-                        Literal::with_language(value, language)
-                    },
-                    rio_api::model::Literal::Typed { value, datatype } => {
-                        // Typed literal
-                        let datatype_uri = match Uri::new(datatype.iri) {
-                            Ok(uri) => uri,
-                            Err(e) => {
-                                println!("Error parsing datatype URI: {}", e);
-                                return Ok(());
-                            }
-                        };
-                        Literal::with_datatype(value, datatype_uri)
-                    },
-                };
-                triples.push(Triple::new_literal_object(subject.clone(), property.clone(), literal_obj));
-                return Ok(());
-            },
-            rio_api::model::Term::Literal(literal) => {
-                // Handle regular literals with their actual values
-                let literal_obj = match literal {
-                    rio_api::model::Literal::Simple { value } => {
-                        // Simple literal
-                        Literal::new(value)
-                    },
-                    rio_api::model::Literal::LanguageTaggedString { value, language } => {
-                        // Language-tagged literal
-                        Literal::with_language(value, language)
-                    },
-                    rio_api::model::Literal::Typed { value, datatype } => {
-                        // Typed literal
-                        let datatype_uri = match Uri::new(datatype.iri) {
-                            Ok(uri) => uri,
-                            Err(e) => {
-                                println!("Error parsing datatype URI: {}", e);
-                                return Ok(());
-                            }
-                        };
-                        Literal::with_datatype(value, datatype_uri)
-                    },
-                };
-                triples.push(Triple::new_literal_object(subject.clone(), property.clone(), literal_obj));
-                return Ok(());
-            },
-            rio_api::model::Term::Triple(triple) => {
-                // Handle quoted triple in object position (RDF-star)
-                // Convert the triple to a standard triple hash URI
-                let triple_str = triple.to_string();
-                let triple_hash = crate::crypto::hash_string(&triple_str);
-                let hash_uri_str = format!("https://scatter.red/triple/{}", triple_hash);
-                match Uri::new(&hash_uri_str) {
-                    Ok(uri) => uri,
-                    Err(e) => {
-                        println!("Error creating URI for quoted triple in object position: {}", e);
-                        return Ok(());
-                    }
-                }
-            },
-            _ => {
-                // Just log a message but continue processing
-                println!("Note: Unknown term type in object position, skipping");
-                return Ok(());
-            }
-        };
-
-        triples.push(Triple::new_uri_object(subject, property, object));
-        Ok(())
-    }).map_err(|e: Box<dyn std::error::Error + Send + Sync>| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        match convert_triple(&parsed_triple, prefixes, domain, &reifiers) {
+            Ok(triple) => triples.push(triple),
+            Err(e) => println!("{}", e),
+        }
+    }
 
     Ok(triples)
+}
+
+/// Gives every blank node that was written without a label (`[ ... ]`, a collection, the
+/// reifier of a quoted triple) the label `anon1`, `anon2`, … in order of first appearance.
+///
+/// The parser labels such nodes at random, and the label becomes part of the node's skolem
+/// IRI, so without this the same file would hash differently each time it is read. A
+/// number already used as a label in the input is skipped.
+fn label_anonymous_nodes(triples: Vec<Triple>) -> Vec<Triple> {
+    fn collect<'a>(triple: &'a Triple, written: &mut HashSet<&'a str>) {
+        if let NamedOrBlankNode::BlankNode(blank) = &triple.subject {
+            if blank.as_ref().unique_id().is_none() {
+                written.insert(blank.as_str());
+            }
+        }
+        match &triple.object {
+            Term::BlankNode(blank) if blank.as_ref().unique_id().is_none() => {
+                written.insert(blank.as_str());
+            },
+            Term::Triple(quoted) => collect(quoted, written),
+            _ => {},
+        }
+    }
+
+    struct Labels {
+        written: HashSet<String>,
+        assigned: HashMap<u128, BlankNode>,
+        next: u64,
+    }
+
+    impl Labels {
+        fn label(&mut self, blank: &BlankNode) -> BlankNode {
+            let Some(id) = blank.as_ref().unique_id() else {
+                return blank.clone();
+            };
+            if let Some(label) = self.assigned.get(&id) {
+                return label.clone();
+            }
+            let label = loop {
+                self.next += 1;
+                let candidate = format!("anon{}", self.next);
+                if !self.written.contains(&candidate) {
+                    break BlankNode::new_unchecked(candidate);
+                }
+            };
+            self.assigned.insert(id, label.clone());
+            label
+        }
+
+        fn relabel(&mut self, triple: Triple) -> Triple {
+            let subject = match triple.subject {
+                NamedOrBlankNode::BlankNode(blank) => self.label(&blank).into(),
+                named => named,
+            };
+            let object = match triple.object {
+                Term::BlankNode(blank) => self.label(&blank).into(),
+                Term::Triple(quoted) => Term::Triple(Box::new(self.relabel(*quoted))),
+                other => other,
+            };
+            Triple::new(subject, triple.predicate, object)
+        }
+    }
+
+    let mut written = HashSet::new();
+    for triple in &triples {
+        collect(triple, &mut written);
+    }
+    let mut labels = Labels {
+        written: written.into_iter().map(str::to_string).collect(),
+        assigned: HashMap::new(),
+        next: 0,
+    };
+    triples.into_iter().map(|triple| labels.relabel(triple)).collect()
+}
+
+/// Converts one parsed triple; see [`convert_parsed`].
+fn convert_triple(
+    triple: &Triple,
+    prefixes: &HashMap<String, String>,
+    domain: &str,
+    reifiers: &HashMap<String, NamedNode>,
+) -> Result<Triple, String> {
+    let node = |blank: &BlankNode| match reifiers.get(blank.as_str()) {
+        Some(triple_hash_uri) => triple_hash_uri.clone(),
+        None => canonicalize_blank_node(blank.as_str(), domain),
+    };
+
+    let subject = match &triple.subject {
+        NamedOrBlankNode::NamedNode(named) => parse_iri(&expand_prefix(named.as_str(), prefixes))
+            .map_err(|e| format!("Error parsing subject URI: {}", e))?,
+        NamedOrBlankNode::BlankNode(blank) => node(blank),
+    };
+
+    let object: Term = match &triple.object {
+        Term::NamedNode(named) => parse_iri(&expand_prefix(named.as_str(), prefixes))
+            .map_err(|e| format!("Error parsing object URI: {}", e))?
+            .into(),
+        Term::BlankNode(blank) => node(blank).into(),
+        Term::Literal(literal) => literal.clone().into(),
+        Term::Triple(quoted) => {
+            let quoted = convert_triple(quoted, prefixes, domain, reifiers)?;
+            scatter::triple_hash_uri(&hash_triple(&quoted)).into()
+        },
+    };
+
+    Ok(Triple::new(subject, triple.predicate.clone(), object))
 }
 
 /// Hashes a triple
@@ -1373,36 +1126,34 @@ mod tests {
 
         // Verify that all objects are literals with the correct values
         for (i, triple) in triples.iter().enumerate() {
-            assert!(triple.object().is_literal());
+            assert!(triple.object.is_literal());
 
             match i {
                 0 => {
                     // Simple literal
-                    if let Some(literal) = triple.object().as_literal() {
-                        assert_eq!(literal.lexical_form(), "Simple literal");
-                        assert_eq!(literal.datatype(), None);
-                        assert_eq!(literal.language_tag(), None);
+                    if let Some(literal) = triple.object.as_literal() {
+                        assert_eq!(literal.value(), "Simple literal");
+                        assert_eq!(literal.datatype().as_str(), "http://www.w3.org/2001/XMLSchema#string");
+                        assert_eq!(literal.language(), None);
                     } else {
                         panic!("Expected a literal object");
                     }
                 },
                 1 => {
                     // Typed literal
-                    if let Some(literal) = triple.object().as_literal() {
-                        assert_eq!(literal.lexical_form(), "42");
-                        assert!(literal.datatype().is_some());
-                        if let Some(datatype) = literal.datatype() {
-                            assert_eq!(datatype.to_string(), "http://www.w3.org/2001/XMLSchema#integer");
-                        }
+                    if let Some(literal) = triple.object.as_literal() {
+                        assert_eq!(literal.value(), "42");
+                        let datatype = literal.datatype();
+                        assert_eq!(datatype.as_str().to_string(), "http://www.w3.org/2001/XMLSchema#integer");
                     } else {
                         panic!("Expected a literal object");
                     }
                 },
                 2 => {
                     // Language-tagged literal
-                    if let Some(literal) = triple.object().as_literal() {
-                        assert_eq!(literal.lexical_form(), "Hello");
-                        assert_eq!(literal.language_tag(), Some("en"));
+                    if let Some(literal) = triple.object.as_literal() {
+                        assert_eq!(literal.value(), "Hello");
+                        assert_eq!(literal.language(), Some("en"));
                     } else {
                         panic!("Expected a literal object");
                     }
@@ -1434,36 +1185,34 @@ ex:subject ex:predicate "Hello"@en .
 
         // Verify that all objects are literals with the correct values
         for (i, triple) in triples.iter().enumerate() {
-            assert!(triple.object().is_literal());
+            assert!(triple.object.is_literal());
 
             match i {
                 0 => {
                     // Simple literal
-                    if let Some(literal) = triple.object().as_literal() {
-                        assert_eq!(literal.lexical_form(), "Simple literal");
-                        assert_eq!(literal.datatype(), None);
-                        assert_eq!(literal.language_tag(), None);
+                    if let Some(literal) = triple.object.as_literal() {
+                        assert_eq!(literal.value(), "Simple literal");
+                        assert_eq!(literal.datatype().as_str(), "http://www.w3.org/2001/XMLSchema#string");
+                        assert_eq!(literal.language(), None);
                     } else {
                         panic!("Expected a literal object");
                     }
                 },
                 1 => {
                     // Typed literal
-                    if let Some(literal) = triple.object().as_literal() {
-                        assert_eq!(literal.lexical_form(), "42");
-                        assert!(literal.datatype().is_some());
-                        if let Some(datatype) = literal.datatype() {
-                            assert_eq!(datatype.to_string(), "http://www.w3.org/2001/XMLSchema#integer");
-                        }
+                    if let Some(literal) = triple.object.as_literal() {
+                        assert_eq!(literal.value(), "42");
+                        let datatype = literal.datatype();
+                        assert_eq!(datatype.as_str().to_string(), "http://www.w3.org/2001/XMLSchema#integer");
                     } else {
                         panic!("Expected a literal object");
                     }
                 },
                 2 => {
                     // Language-tagged literal
-                    if let Some(literal) = triple.object().as_literal() {
-                        assert_eq!(literal.lexical_form(), "Hello");
-                        assert_eq!(literal.language_tag(), Some("en"));
+                    if let Some(literal) = triple.object.as_literal() {
+                        assert_eq!(literal.value(), "Hello");
+                        assert_eq!(literal.language(), Some("en"));
                     } else {
                         panic!("Expected a literal object");
                     }

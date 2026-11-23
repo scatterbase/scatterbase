@@ -1,139 +1,47 @@
-//! Term module for Scatterbase
-//! 
-//! This module provides the Term enum for Scatterbase,
-//! which can represent either a URI or a Literal.
-//! It also provides functions for handling term-related commands.
+//! Term helpers and lookups over stored claims.
+//!
+//! Terms are [`oxrdf::Term`]; this module adds accessors the kernel uses and the scans of
+//! the N-Triples store that find the latest claim for a term and the current key of an
+//! attribution.
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
-use crate::uri::Uri;
-use crate::literal::Literal;
+use oxrdf::{Literal, NamedNode, NamedOrBlankNode, Term};
 
-/// Represents a Term in Scatterbase, which can be either a URI, a Literal, or a Triple (for RDF-star)
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Term {
-    /// A URI term
-    Uri(Uri),
-    /// A Literal term
-    Literal(Literal),
-    /// A Triple term (for RDF-star)
-    Triple(Box<crate::triple::Triple>),
+/// Accessors by kind, for terms and subjects.
+pub trait TermExt {
+    /// The IRI, if this is one.
+    fn as_named_node(&self) -> Option<&NamedNode>;
+    /// The literal, if this is one.
+    fn as_literal(&self) -> Option<&Literal>;
 }
 
-impl std::fmt::Display for Term {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl TermExt for Term {
+    fn as_named_node(&self) -> Option<&NamedNode> {
         match self {
-            Term::Uri(uri) => write!(f, "<{}>", uri),
-            Term::Literal(literal) => write!(f, "{}", literal),
-            Term::Triple(triple) => write!(f, "<<{}>>", triple.to_ntriples()),
-        }
-    }
-}
-
-impl Term {
-    /// Creates a new URI Term
-    ///
-    /// # Arguments
-    ///
-    /// * `uri` - The URI to wrap
-    ///
-    /// # Returns
-    ///
-    /// * `Term` - A new Term instance containing the URI
-    pub fn uri(uri: Uri) -> Self {
-        Term::Uri(uri)
-    }
-
-    /// Creates a new Literal Term
-    ///
-    /// # Arguments
-    ///
-    /// * `literal` - The Literal to wrap
-    ///
-    /// # Returns
-    ///
-    /// * `Term` - A new Term instance containing the Literal
-    pub fn literal(literal: Literal) -> Self {
-        Term::Literal(literal)
-    }
-
-    /// Creates a new Triple Term (for RDF-star)
-    ///
-    /// # Arguments
-    ///
-    /// * `triple` - The Triple to wrap
-    ///
-    /// # Returns
-    ///
-    /// * `Term` - A new Term instance containing the Triple
-    pub fn triple(triple: crate::triple::Triple) -> Self {
-        Term::Triple(Box::new(triple))
-    }
-
-    /// Returns true if this Term is a URI
-    pub fn is_uri(&self) -> bool {
-        matches!(self, Term::Uri(_))
-    }
-
-    /// Returns true if this Term is a Literal
-    pub fn is_literal(&self) -> bool {
-        matches!(self, Term::Literal(_))
-    }
-
-    /// Returns the URI if this Term is a URI, or None otherwise
-    pub fn as_uri(&self) -> Option<&Uri> {
-        match self {
-            Term::Uri(uri) => Some(uri),
+            Term::NamedNode(node) => Some(node),
             _ => None,
         }
     }
 
-    /// Returns the Literal if this Term is a Literal, or None otherwise
-    pub fn as_literal(&self) -> Option<&Literal> {
+    fn as_literal(&self) -> Option<&Literal> {
         match self {
             Term::Literal(literal) => Some(literal),
             _ => None,
         }
     }
+}
 
-    /// Returns the N-Triples representation of this Term
-    pub fn to_ntriples(&self) -> String {
+impl TermExt for NamedOrBlankNode {
+    fn as_named_node(&self) -> Option<&NamedNode> {
         match self {
-            Term::Uri(uri) => format!("<{}>", uri),
-            Term::Literal(literal) => literal.to_string(),
-            Term::Triple(triple) => format!("<<{}>>", triple.to_ntriples().trim_start_matches('<').trim_end_matches('>')),
+            NamedOrBlankNode::NamedNode(node) => Some(node),
+            NamedOrBlankNode::BlankNode(_) => None,
         }
     }
 
-    /// Returns true if this Term is a Triple
-    pub fn is_triple(&self) -> bool {
-        matches!(self, Term::Triple(_))
-    }
-
-    /// Returns the Triple if this Term is a Triple, or None otherwise
-    pub fn as_triple(&self) -> Option<&crate::triple::Triple> {
-        match self {
-            Term::Triple(triple) => Some(triple),
-            _ => None,
-        }
-    }
-}
-
-impl From<Uri> for Term {
-    fn from(uri: Uri) -> Self {
-        Term::Uri(uri)
-    }
-}
-
-impl From<Literal> for Term {
-    fn from(literal: Literal) -> Self {
-        Term::Literal(literal)
-    }
-}
-
-impl From<crate::triple::Triple> for Term {
-    fn from(triple: crate::triple::Triple) -> Self {
-        Term::Triple(Box::new(triple))
+    fn as_literal(&self) -> Option<&Literal> {
+        None
     }
 }
 
@@ -159,12 +67,12 @@ pub fn find_latest_claim_hash_for_term(storage_file: &str, term: &str) -> io::Re
     let term_uri = if term.starts_with('<') && term.ends_with('>') {
         // Extract the URI from the angle brackets
         let uri_str = &term[1..term.len()-1];
-        match Uri::new(uri_str) {
+        match NamedNode::new(uri_str) {
             Ok(uri) => Some(uri),
             Err(_) => None,
         }
     } else if term.starts_with("http://") || term.starts_with("https://") {
-        match Uri::new(term) {
+        match NamedNode::new(term) {
             Ok(uri) => Some(uri),
             Err(_) => None,
         }
@@ -174,7 +82,7 @@ pub fn find_latest_claim_hash_for_term(storage_file: &str, term: &str) -> io::Re
 
     // Format the term for searching in the file
     let search_term = if let Some(uri) = &term_uri {
-        format!("<{}>", uri)
+        format!("<{}>", uri.as_str())
     } else {
         term.to_string()
     };
@@ -318,12 +226,12 @@ pub fn find_latest_public_key_for_attribution(storage_file: &str, attribution: &
     let attribution_uri = if attribution.starts_with('<') && attribution.ends_with('>') {
         // Extract the URI from the angle brackets
         let uri_str = &attribution[1..attribution.len()-1];
-        match Uri::new(uri_str) {
+        match NamedNode::new(uri_str) {
             Ok(uri) => Some(uri),
             Err(_) => None,
         }
     } else if attribution.starts_with("http://") || attribution.starts_with("https://") {
-        match Uri::new(attribution) {
+        match NamedNode::new(attribution) {
             Ok(uri) => Some(uri),
             Err(_) => None,
         }
@@ -333,7 +241,7 @@ pub fn find_latest_public_key_for_attribution(storage_file: &str, attribution: &
 
     // Format the attribution for searching in the file
     let search_attribution = if let Some(uri) = &attribution_uri {
-        format!("<{}>", uri)
+        format!("<{}>", uri.as_str())
     } else {
         attribution.to_string()
     };
@@ -579,43 +487,21 @@ mod tests {
     
 
     #[test]
-    fn test_uri_term() {
-        let uri = Uri::new("https://example.com/").unwrap();
-        let term = Term::uri(uri.clone());
+    fn test_term_accessors() {
+        let uri = NamedNode::new("https://example.com/").unwrap();
+        let literal = Literal::new_simple_literal("Example");
 
-        assert!(term.is_uri());
-        assert!(!term.is_literal());
-        assert_eq!(term.as_uri(), Some(&uri));
+        let term = Term::from(uri.clone());
+        assert_eq!(term.as_named_node(), Some(&uri));
         assert_eq!(term.as_literal(), None);
-        assert_eq!(term.to_ntriples(), "<https://example.com/>");
-    }
 
-    #[test]
-    fn test_literal_term() {
-        let literal = Literal::new("Example");
-        let term = Term::literal(literal.clone());
-
-        assert!(!term.is_uri());
-        assert!(term.is_literal());
-        assert_eq!(term.as_uri(), None);
+        let term = Term::from(literal.clone());
+        assert_eq!(term.as_named_node(), None);
         assert_eq!(term.as_literal(), Some(&literal));
-        assert_eq!(term.to_ntriples(), "\"Example\"");
-    }
 
-    #[test]
-    fn test_from_uri() {
-        let uri = Uri::new("https://example.com/").unwrap();
-        let term: Term = uri.clone().into();
-
-        assert_eq!(term, Term::Uri(uri));
-    }
-
-    #[test]
-    fn test_from_literal() {
-        let literal = Literal::new("Example");
-        let term: Term = literal.clone().into();
-
-        assert_eq!(term, Term::Literal(literal));
+        let subject = NamedOrBlankNode::from(uri.clone());
+        assert_eq!(subject.as_named_node(), Some(&uri));
+        assert_eq!(subject.as_literal(), None);
     }
 
     #[test]
