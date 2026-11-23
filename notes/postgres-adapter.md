@@ -1,5 +1,7 @@
 # PostgreSQL Storage Adapter
 
+> **Status.** This note predates the crate refactor and describes an adapter for a `Storage` trait that no longer exists. The motivation still holds. The plan now is `scatter-log-postgres` for the log and a Postgres driver for the `scatter-quadstore` contract, not the schema and trait methods below. See [architecture.md](architecture.md).
+
 This document describes the design for a PostgreSQL implementation of the Scatterbase `Storage` trait, intended for MediaWiki-like deployments where multiple users read and write concurrently through a web-facing service.
 
 ## Motivation

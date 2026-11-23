@@ -1,5 +1,7 @@
 # Wikibase Extension for Scatterbase
 
+> **Status.** This note predates the crate refactor. The goal still holds, but the Wikibase model, RDF mapping and Wikidata import it proposes to write exist as the shared `scatter-wikibase-*`, `scatter-providers` and `scatter-ingest` crates in the triplespace repository, which this would be built on. See [architecture.md](architecture.md).
+
 This document proposes a Scatterbase extension that implements the Wikibase ontology, allowing a Scatterbase instance to function as a Wikibase-compatible site — storing items, properties, lexemes, statements with qualifiers and references, ranks, sitelinks, and labels/descriptions/aliases in the same structural model used by Wikidata.
 
 ## Background

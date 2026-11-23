@@ -37,6 +37,10 @@ scatter-integrity = { git = "https://github.com/scatterbase/triplespace", rev = 
 # Driving the log's futures from synchronous code: the file backend does its I/O inline
 pollster = "1"
 
+# The command line
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"
+
 # RDF terms and I/O: the oxrdf family, as the shared scatter crates use
 oxrdf = { version = "0.3", features = ["rdf-12"] }
 oxttl = { version = "0.2", features = ["rdf-12"] }

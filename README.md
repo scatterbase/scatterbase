@@ -56,6 +56,8 @@ scatterbase init
 ```
 This command will prompt you for configuration details (domain, storage file path, etc.) and generate a server key pair. Use the `-d` or `--default` flag to use default values.
 
+Every command and subcommand describes itself with `--help`, for example `scatterbase claim erase --help`. A command that fails says why on standard error and exits with a non-zero status. `--env <path>` names a configuration file other than `.env`.
+
 ### Core Commands
 
 #### Domain Management
@@ -151,7 +153,7 @@ scatterbase term latest <uri>
 ```
 
 #### Purge Data
-Delete all stored data (Warning: destructive!):
+Delete everything the instance keeps: the log, the store, every key and the configuration (Warning: destructive!). It asks for confirmation unless given `--yes`:
 ```bash
 scatterbase purge
 ```
@@ -166,9 +168,9 @@ Scatterbase is currently in active development. Below is the status of core comp
 - [x] **ED25519 Cryptography**: Key generation, signing, and verification.
 - [x] **Base32z Encoding**: Custom encoding for all identifiers.
 - [x] **File-based Storage**: A checkpointed claim log, and an N-Quads store derived from it.
-- [x] **CLI Interface**: Robust command-line interface with help for all commands.
+- [x] **CLI Interface**: Command-line interface on `clap`, with help for every command and meaningful exit statuses.
 - [x] **Claim Envelopes**: Implementation of signed claim structures with sequence IDs and timestamps.
-- [x] **Term Lookup**: Ability to scan storage for the most recent activity related to a term.
+- [x] **Term Lookup**: The most recent claim to use a term, from the store's indexes.
 - [ ] **Advanced Querying**: Support for SPARQL or complex graph queries (planned).
 - [ ] **Network Synchronization**: P2P or client-server synchronization of claims (planned).
 

@@ -1,41 +1,25 @@
-use std::io::{self, Write, BufRead, BufReader};
-use std::fs::File;
-use std::path::Path;
+//! The prefix file: the prefixes a person may write IRIs with.
+//!
+//! The file is Turtle prefix declarations, one to a line. An IRI in a file of triples that
+//! is written with one of its prefixes, as `<schema:name>` is, is read as the IRI the
+//! prefix stands for ([`expand_prefix`]).
+
 use std::collections::HashMap;
-use std::env;
-use dotenv::dotenv;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufRead, BufReader, Write};
+use std::path::Path;
 
 use scatter_vocab::{foaf, owl, rdf, rdfs, xsd};
-use crate::utils::{ensure_directory_exists};
-use crate::constants::DEFAULT_PREFIX_FILE;
 
-/// Reads prefixes from the prefix file
-pub fn read_prefixes() -> HashMap<String, String> {
+/// Reads the prefixes of a prefix file. A file that does not exist has none.
+pub fn read_prefixes(prefix_file: impl AsRef<Path>) -> HashMap<String, String> {
     let mut prefixes = HashMap::new();
-
-    // Load environment variables
-    dotenv().ok();
-
-    // Get prefix file path from environment or use default
-    let prefix_file = env::var("PREFIX_FILE").unwrap_or_else(|_| DEFAULT_PREFIX_FILE.to_string());
-
-    // Check if the file exists
-    if !Path::new(&prefix_file).exists() {
+    let Ok(file) = File::open(prefix_file) else {
         return prefixes;
-    }
-
-    // Open the file for reading
-    let file = match File::open(&prefix_file) {
-        Ok(file) => file,
-        Err(_) => return prefixes,
     };
 
-    let reader = BufReader::new(file);
-
-    // Parse each line for prefixes
-    for line in reader.lines().map_while(Result::ok) {
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
         if line.starts_with("@prefix") {
-            // Parse the prefix line
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 4 {
                 let prefix = parts[1].trim_end_matches(':');
@@ -44,7 +28,6 @@ pub fn read_prefixes() -> HashMap<String, String> {
             }
         }
     }
-
     prefixes
 }
 
@@ -69,35 +52,62 @@ pub fn expand_prefix(uri_str: &str, prefixes: &HashMap<String, String>) -> Strin
     uri_str.to_string()
 }
 
-/// Initializes the prefix file with default prefixes
-pub fn init_prefix_file() -> io::Result<()> {
-    // Load environment variables
-    dotenv().ok();
-
-    // Get prefix file path from environment or use default
-    let prefix_file = env::var("PREFIX_FILE").unwrap_or_else(|_| DEFAULT_PREFIX_FILE.to_string());
-
-    // Ensure the directory exists
-    ensure_directory_exists(&prefix_file)?;
-
-    // Check if the prefix file already exists
-    if Path::new(&prefix_file).exists() {
-        // File already exists, no need to initialize
-        return Ok(());
+fn create_parent(path: &Path) -> io::Result<()> {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => fs::create_dir_all(parent),
+        _ => Ok(()),
     }
+}
 
-    // Create the file
-    let mut file = File::create(&prefix_file)?;
-
-    // Write standard RDF prefixes
+/// Creates the prefix file with the standard prefixes, unless it exists. Returns whether it
+/// was created.
+pub fn init_prefix_file(prefix_file: impl AsRef<Path>) -> io::Result<bool> {
+    let path = prefix_file.as_ref();
+    if path.exists() {
+        return Ok(false);
+    }
+    create_parent(path)?;
+    let mut file = File::create(path)?;
     writeln!(file, "@prefix rdf: <{}> .", rdf::NS)?;
     writeln!(file, "@prefix rdfs: <{}> .", rdfs::NS)?;
     writeln!(file, "@prefix xsd: <{}> .", xsd::NS)?;
     writeln!(file, "@prefix owl: <{}> .", owl::NS)?;
     writeln!(file, "@prefix foaf: <{}> .", foaf::NS)?;
     writeln!(file, "@prefix dc: <http://purl.org/dc/elements/1.1/> .")?;
+    Ok(true)
+}
 
-    println!("Initialized prefix file with standard RDF prefixes: {}", prefix_file);
+/// Adds a prefix to the prefix file, creating the file with the `rdf:` prefix if it is not
+/// there.
+pub fn add_prefix(prefix_file: impl AsRef<Path>, prefix: &str, uri: &str) -> io::Result<()> {
+    let path = prefix_file.as_ref();
+    create_parent(path)?;
+    let is_new = !path.exists();
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    if is_new {
+        writeln!(file, "@prefix rdf: <{}> .", rdf::NS)?;
+    }
+    writeln!(file, "@prefix {}: <{}> .", prefix, uri)
+}
 
-    Ok(())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefixes_are_written_and_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("data").join("prefixes.ttl");
+        assert!(read_prefixes(&file).is_empty());
+
+        assert!(init_prefix_file(&file).unwrap());
+        assert!(!init_prefix_file(&file).unwrap());
+        add_prefix(&file, "schema", "http://schema.org/").unwrap();
+
+        let prefixes = read_prefixes(&file);
+        assert_eq!(prefixes.len(), 7);
+        assert_eq!(expand_prefix("schema:name", &prefixes), "http://schema.org/name");
+        assert_eq!(expand_prefix("unknown:name", &prefixes), "unknown:name");
+        assert_eq!(expand_prefix("http://example.org/a", &prefixes), "http://example.org/a");
+    }
 }

@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 scatterbase-kernel.workspace = true
+clap.workspace = true
 scatter-claims.workspace = true
 scatter-actors.workspace = true
 scatter-quadstore.workspace = true
@@ -21,6 +22,10 @@ scatter-vocab.workspace = true
 dotenv.workspace = true
 ed25519-dalek.workspace = true
 chrono.workspace = true
+
+# To end quietly when the reader of our output goes away
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

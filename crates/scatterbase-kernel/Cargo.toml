@@ -15,7 +15,6 @@ scatter-actors.workspace = true
 scatter-integrity.workspace = true
 pollster.workspace = true
 rand.workspace = true
-dotenv.workspace = true
 ed25519-dalek.workspace = true
 rand_core.workspace = true
 sha2.workspace = true
