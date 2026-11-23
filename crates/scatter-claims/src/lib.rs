@@ -63,3 +63,8 @@ pub enum ClaimError {
     #[error("not a claim envelope: {0}")]
     Malformed(String),
 }
+
+/// The examples of the README, compiled and run as documentation tests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
