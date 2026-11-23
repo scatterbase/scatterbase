@@ -22,7 +22,7 @@ pub const TEST_DATASET_CONTENT: &str = r#"<http://uwlcekqxsvwtoxzm.sandbox> <htt
 <https://scatter.red/claim/sj31r3jm1oxk5wqctozjer5r83o6orynaaqkmcis1ijxgt7x3iwy> <https://scatter.red/terms/v0/seqID> "2025070800450512100"^^<http://www.w3.org/2001/XMLSchema#unsignedLong> .
 <https://scatter.red/claim/sj31r3jm1oxk5wqctozjer5r83o6orynaaqkmcis1ijxgt7x3iwy> <https://scatter.red/terms/v0/acknowledgesPriorUse> <https://scatter.red/ack/1> .
 <https://scatter.red/claim/sj31r3jm1oxk5wqctozjer5r83o6orynaaqkmcis1ijxgt7x3iwy> <https://scatter.red/terms/v0/acknowledgesPriorUse> <https://scatter.red/ack/2> .
-<https://scatter.red/claim/sj31r3jm1oxk5wqctozjer5r83o6orynaaqkmcis1ijxgt7x3iwy> <https://scatter.red/terms/v0/userSignature> "ed25519:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"^^<https://scatter.red/terms/v0/Base64> .
+<https://scatter.red/claim/sj31r3jm1oxk5wqctozjer5r83o6orynaaqkmcis1ijxgt7x3iwy> <https://scatter.red/terms/v0/userSignature> "ed25519:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ" .
 <https://scatter.red/ack/1> <https://scatter.red/terms/v0/term> <http://uwlcekqxsvwtoxzm.sandbox> .
 <https://scatter.red/ack/1> <https://scatter.red/terms/v0/priorClaim> <https://scatter.red/claim/yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy> .
 <https://scatter.red/ack/2> <https://scatter.red/terms/v0/term> <http://schema.org/Dataset> .
