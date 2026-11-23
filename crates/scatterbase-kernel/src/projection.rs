@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use ed25519_dalek::VerifyingKey;
 use oxrdf::{NamedNode, Quad};
 use scatter_actors::signing::{current_keys, KeyRecord};
+use scatter_actors::time::Timestamp;
 use scatter_quadstore::{NQuadsFile, Pattern, QuadStore};
 
 use crate::instance::{Instance, GRAPH_CLAIM, GRAPH_META, GRAPH_MUTABLE};
@@ -65,7 +66,7 @@ pub fn catch_up(instance: &Instance, log: &ClaimLog) -> io::Result<u64> {
 }
 
 /// Makes the `mutable` graph hold the registration of every key an actor has now, and
-/// nothing else: a key that was revoked leaves it.
+/// nothing else: a key that was revoked or has expired leaves it.
 fn project_keys(instance: &Instance, log: &ClaimLog, store: &mut NQuadsFile) -> io::Result<()> {
     let graph = instance.graph(GRAPH_MUTABLE);
 
@@ -76,9 +77,10 @@ fn project_keys(instance: &Instance, log: &ClaimLog, store: &mut NQuadsFile) -> 
             None => by_actor.push((actor, vec![record])),
         }
     }
+    let now = Timestamp(u64::try_from(chrono::Utc::now().timestamp_micros()).unwrap_or(0));
     let mut current: Vec<Quad> = Vec::new();
     for (actor, records) in &by_actor {
-        for key in current_keys(records) {
+        for key in current_keys(records).into_iter().filter(|key| key.is_valid_at(now)) {
             let key = VerifyingKey::from_bytes(&key.public_key.0)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             current.extend(keys::registration(actor, &key).into_iter().map(|triple| triple.in_graph(graph.clone())));

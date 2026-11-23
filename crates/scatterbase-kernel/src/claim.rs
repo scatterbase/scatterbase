@@ -696,6 +696,31 @@ mod tests {
     }
 
     #[test]
+    fn claims_before_and_after_a_key_rotation_verify() {
+        let fixture = Fixture::new();
+        let alice = iri("http://example.org/alice");
+        let alice_key = fixture.register(&alice);
+        fixture.claim(vec![name("http://example.org/s", "S")], &fixture.server, &fixture.server_key).unwrap();
+        fixture.claim(vec![name("http://example.org/a", "A")], &alice, &alice_key).unwrap();
+
+        let new = keys::generate();
+        fixture.log().rotate_server_key(&new, &fixture.server_key).unwrap();
+
+        // The old key no longer accepts or claims as the server; the new one does both
+        let by_alice = fixture.prepare(vec![name("http://example.org/b", "B")], &alice, &alice_key);
+        assert_eq!(submit(by_alice, &fixture.instance, &fixture.server_key).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        let stale = fixture.prepare(vec![name("http://example.org/t", "T")], &fixture.server, &fixture.server_key);
+        assert_eq!(submit(stale, &fixture.instance, &new).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        let by_server = prepare(vec![name("http://example.org/t", "T")], fixture.server.clone(), DOMAIN, &fixture.store(), &new).unwrap();
+        submit(by_server, &fixture.instance, &new).unwrap();
+        let by_alice = fixture.prepare(vec![name("http://example.org/b", "B")], &alice, &alice_key);
+        submit(by_alice, &fixture.instance, &new).unwrap();
+
+        // Claims the old key accepted, and the server's claim it signed, still verify
+        assert_eq!(fixture.log().verify(&new.verifying_key()).unwrap(), 4);
+    }
+
+    #[test]
     fn the_store_is_rebuilt_from_the_log() {
         let fixture = Fixture::new();
         let alice = iri("http://example.org/alice");

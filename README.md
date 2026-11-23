@@ -87,9 +87,22 @@ scatterbase key add --attribution https://example.org/alice
 ```
 This generates a new Ed25519 key for the actor, keeps it beside the server's key, and registers its public key in the log as a key record written by the server. `claim prepare` and `claim write` then sign that actor's claims with it. Use `--file <keyfile>` to register a key you already hold, and `--private-key <keyfile>` when preparing a claim with it. `claim submit` verifies every claim's signature against the actor's registered keys.
 
-Revoke an actor's keys, after which `key add` registers a new one:
+A key can be given an end date with `--expires 2027-12-31T00:00:00Z`.
+
+Revoke an actor's keys, or one of them with `--key-id`, after which `key add` registers a new one:
 ```bash
 scatterbase key revoke --attribution https://example.org/alice
+```
+
+List the keys of an actor, or of the server:
+```bash
+scatterbase key list --attribution https://example.org/alice
+scatterbase key list
+```
+
+Replace the server's key. The log records the new key, signed by the old one; what the old key signed still verifies:
+```bash
+scatterbase key rotate
 ```
 
 #### Actors

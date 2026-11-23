@@ -978,6 +978,7 @@ dependencies = [
  "dotenv",
  "ed25519-dalek",
  "oxrdf",
+ "scatter-actors",
  "scatter-claims",
  "scatter-quadstore",
  "scatter-vocab",

@@ -21,7 +21,7 @@ use crate::cli::{
     print_help, print_init_help, print_domain_help, print_triple_help,
     print_claim_help, print_prefix_help, print_purge_help, get_env_path,
 };
-use crate::key::{handle_key_add_command, handle_key_revoke_command, print_key_help};
+use crate::key::{handle_key_add_command, handle_key_list_command, handle_key_revoke_command, handle_key_rotate_command, print_key_help};
 use crate::log::{handle_log_rebuild_command, handle_log_verify_command, print_log_help};
 use crate::term::{handle_term_latest_command, print_term_help};
 use crate::domain::handle_domain_init_command;
@@ -155,6 +155,12 @@ fn main() {
                     } else if args[2] == "revoke" {
                         let env_path = get_env_path(&args);
                         if let Err(e) = handle_key_revoke_command(&args, &env_path) {
+                            eprintln!("Error: {}", e);
+                        }
+                    } else if args[2] == "list" || args[2] == "rotate" {
+                        let env_path = get_env_path(&args);
+                        let handle = if args[2] == "list" { handle_key_list_command } else { handle_key_rotate_command };
+                        if let Err(e) = handle(&args, &env_path) {
                             eprintln!("Error: {}", e);
                         }
                     } else {

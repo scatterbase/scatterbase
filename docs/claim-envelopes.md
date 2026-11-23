@@ -88,9 +88,9 @@ The sequence ID is the claim's offset in the claim partition of the log, written
 
 A public key is named by `urn:ed25519:{key}`, the 32 bytes in z-base-32. Its **key ID** is the SHA-256 of the public key in z-base-32.
 
-**The server's key** is the key of the founding record of the log's server partition, and a claim by the server is checked against it.
+**The server's key** is the last key of the chain in the log's server partition, which begins with the founding record, and a claim by the server is checked against it. `scatterbase key rotate` replaces it: the log records the new key in a `key:` record signed by the old one, and from then on only the new key attests records, signs checkpoints, accepts claims and claims as the server. What earlier keys signed still verifies, since every key of the chain is known to have been the server's. The old private key is overwritten.
 
-**An actor's keys** are registered by the server in the log's mutable partition, as `scatter-actors` key records (below). An actor may have several keys at once. A claim by an actor is accepted if its signature verifies against any key of the actor's that is registered, not revoked and valid at the time; a claim by an actor with no such key is refused. `scatterbase key add` registers a key and `scatterbase key revoke` revokes an actor's keys. A revoked key signs no more, and the claims it signed stay in the log and stay verifiable, since each claim record keeps the public key it was checked against.
+**An actor's keys** are registered by the server in the log's mutable partition, as `scatter-actors` key records (below). An actor may have several keys at once. A claim by an actor is accepted if its signature verifies against any key of the actor's that is registered, not revoked and valid at the time; a claim by an actor with no such key is refused. `scatterbase key add` registers a key, which with `--expires` is valid only until a given time. `scatterbase key revoke` revokes an actor's keys, or with `--key-id` one of them, and `scatterbase key list` shows what has become of each. A revoked key signs no more, and the claims it signed stay in the log and stay verifiable, since each claim record keeps the public key it was checked against.
 
 Nothing anyone claims registers a key. The keys actors have now are also written to the store, in the `mutable` graph, as:
 
@@ -101,7 +101,7 @@ Nothing anyone claims registers a key. The keys actors have now are also written
 <urn:ed25519:{key}> scatter:owner <{actor}> .
 ```
 
-That graph is derived from the key records, and a revoked key leaves it. The same triples claimed by an actor, or by the server, are in the `claim` or `server` graph and are only what was claimed.
+That graph is derived from the key records, and a key that is revoked or has expired leaves it. The same triples claimed by an actor, or by the server, are in the `claim` or `server` graph and are only what was claimed.
 
 Each actor has its own key. The server's private key is in the file the configuration names; `key add` writes an actor's new key to `actors/{hash}.ed25519.private` beside it, where `{hash}` is the SHA-256 of the actor's IRI in z-base-32.
 
@@ -163,7 +163,7 @@ Partition 0 founds and describes the instance. It holds `scatter:v0/config` reco
 | 3 | `graph:mutable` | The mutable partition: its ID and its policies |
 | 4 | `graph:meta` | The `meta` graph, a projection |
 
-The `graph:` records are the instance's **graph registry**. Each is attested by the server under the founding record's authority. The claim partition is the one the `graph:claim` record names. The `key:` records form a chain, in which a later key must be signed by the one before it, and the server's key is the last of the chain.
+The `graph:` records are the instance's **graph registry**. Each is attested by the server under the founding record's authority. The claim partition is the one the `graph:claim` record names. The `key:` records form a chain, in which a later key must be signed by the one before it, and the server's key is the last of the chain (see Keys).
 
 ### The mutable partition
 

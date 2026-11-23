@@ -23,7 +23,9 @@
 //! The `graph:` records are the instance's graph registry, filled in from the rows of
 //! [`GRAPHS_TOML`]. Each is attested by the server under the founding record's authority.
 //! The claim partition is found by its `graph:claim` record, and the server's keys by the
-//! `key:` records, which form a chain: a later key must be signed by the one before it.
+//! `key:` records, which form a chain: a later key must be signed by the one before it
+//! ([`ClaimLog::rotate_server_key`]). The last key of the chain is the server's key; the
+//! earlier ones are remembered so that what they signed still verifies.
 //!
 //! # The mutable partition
 //!
@@ -90,7 +92,7 @@ use scatter_claims::{Acceptance, Acknowledgments, Claim, ClaimId, Redacted, Sign
 use scatter_actors::signing::{current_keys, KeyRecord, PublicKey};
 use scatter_actors::{ActorKey, ActorKind, ActorRecord, ActorSurrogates};
 use scatter_actors::time::Timestamp;
-use scatter_integrity::attest::{founding_attestation, instance_attestation, Authority};
+use scatter_integrity::attest::{client_signature, founding_attestation, instance_attestation, Authority};
 use scatter_integrity::checkpoint::{host_of, tenant_origin};
 use scatter_integrity::{CheckpointStore, FileCheckpoints, KeyChain, Level, Verify};
 use scatter_log::body::{Body, Part};
@@ -448,6 +450,53 @@ impl ClaimLog {
             .expect("an open log has a current Ed25519 key")
     }
 
+    /// Every key the server has had, oldest first: the chain of the server partition's
+    /// `key:` records. The last is the server's current key.
+    pub fn server_keys(&self) -> Vec<(String, VerifyingKey)> {
+        self.chain.keys().iter()
+            .filter_map(|key| Some((key.entry.key_id.clone(), VerifyingKey::from_bytes(&key.public_key()?).ok()?)))
+            .collect()
+    }
+
+    /// Replaces the server's key: appends a `key:` record that registers `new`, signed by
+    /// the current key, which the caller must hold as `current`.
+    ///
+    /// From then on `new` is the server's key: it attests records, signs checkpoints and
+    /// accepts claims, and claims by the server are checked against it. What the earlier
+    /// keys signed stays valid, since every key of the chain is known to have been the
+    /// server's.
+    pub fn rotate_server_key(&mut self, new: &SigningKey, current: &SigningKey) -> io::Result<()> {
+        self.require_server_key(current)?;
+        let entry = KeyEntry::ed25519(new.verifying_key().to_bytes());
+        if self.chain.get(&entry.key_id).is_some() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "that key has been the server's before"));
+        }
+        let content = entry.to_value();
+        let comment = Value::text("rotation");
+        let current_id = scatter_log::registry::key_id(&current.verifying_key().to_bytes());
+        let attestation = Value::map(vec![
+            (Value::text("actor"), Value::text(self.server.as_str())),
+            (Value::text("signature"), client_signature(
+                current,
+                &current_id,
+                &scatter_log::cbor::encode(&content).map_err(other)?,
+                &scatter_log::cbor::encode(&comment).map_err(other)?,
+            )),
+        ]);
+        let draft = Draft {
+            appended_at: now().as_micros(),
+            payload_type: PAYLOAD_CONFIG.into(),
+            key: Some(entry.key()),
+            revid: None,
+            logid: None,
+            page_id: None,
+            body: Body::core(&content, &comment, &attestation).map_err(other)?,
+        };
+        block_on(self.store.append(SERVER_PARTITION, draft)).map_err(other)?;
+        self.chain = KeyChain::from_records(&records(&self.store, SERVER_PARTITION)?).map_err(invalid)?;
+        self.checkpoint(SERVER_PARTITION, new)
+    }
+
     /// The graphs the server partition registers, by name, each with its partition if it is
     /// a source.
     pub fn graphs(&self) -> io::Result<Vec<(String, Option<u64>)>> {
@@ -556,9 +605,18 @@ impl ClaimLog {
 
     /// Registers a public key for an actor, valid from now. Returns its key record.
     pub fn register_key(&mut self, actor: &NamedNode, key: &VerifyingKey, server_key: &SigningKey) -> io::Result<KeyRecord> {
-        let surrogate = self.mint_surrogate(actor, server_key)?;
+        self.register_key_until(actor, key, None, server_key)
+    }
+
+    /// Registers a public key for an actor, valid from now until `valid_until` if that is
+    /// given. Returns its key record.
+    pub fn register_key_until(&mut self, actor: &NamedNode, key: &VerifyingKey, valid_until: Option<Timestamp>, server_key: &SigningKey) -> io::Result<KeyRecord> {
         let now = now();
-        let record = KeyRecord::register(PublicKey(key.to_bytes()), now, None).map_err(invalid)?;
+        if valid_until.is_some_and(|until| until <= now) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "the key would already have expired"));
+        }
+        let surrogate = self.mint_surrogate(actor, server_key)?;
+        let record = KeyRecord::register(PublicKey(key.to_bytes()), now, valid_until).map_err(invalid)?;
         let content = scatter_log::cbor::to_value(&record).map_err(other)?;
         self.append_mutable(PAYLOAD_KEY, ActorKey::surrogate(surrogate).to_string(), &content, now, server_key)?;
         Ok(record)
@@ -566,11 +624,24 @@ impl ClaimLog {
 
     /// Revokes every key an actor has. Returns the records that were revoked.
     pub fn revoke_keys(&mut self, actor: &NamedNode, server_key: &SigningKey) -> io::Result<Vec<KeyRecord>> {
+        self.revoke(actor, None, server_key)
+    }
+
+    /// Revokes the key of an actor's with a key ID. Returns its record, or `None` if the
+    /// actor has no such key now.
+    pub fn revoke_key(&mut self, actor: &NamedNode, key_id: &str, server_key: &SigningKey) -> io::Result<Option<KeyRecord>> {
+        Ok(self.revoke(actor, Some(key_id), server_key)?.pop())
+    }
+
+    fn revoke(&mut self, actor: &NamedNode, key_id: Option<&str>, server_key: &SigningKey) -> io::Result<Vec<KeyRecord>> {
         let Some(surrogate) = self.surrogate_of(actor)? else {
             return Ok(Vec::new());
         };
         let records = self.key_records(actor)?;
-        let revoked: Vec<KeyRecord> = current_keys(&records).into_iter().cloned().collect();
+        let revoked: Vec<KeyRecord> = current_keys(&records).into_iter()
+            .filter(|record| key_id.is_none_or(|id| record.key_id == id))
+            .cloned()
+            .collect();
         for record in &revoked {
             let content = scatter_log::cbor::to_value(&record.revoke()).map_err(other)?;
             self.append_mutable(PAYLOAD_KEY, ActorKey::surrogate(surrogate).to_string(), &content, now(), server_key)?;
@@ -707,7 +778,13 @@ impl ClaimLog {
     }
 
     fn checkpoint(&mut self, partition: u64, server_key: &SigningKey) -> io::Result<()> {
-        let origin = if partition == self.partition { self.origin.clone() } else { self.mutable_origin.clone() };
+        let origin = if partition == SERVER_PARTITION {
+            self.server_origin.clone()
+        } else if partition == self.partition {
+            self.origin.clone()
+        } else {
+            self.mutable_origin.clone()
+        };
         let checkpoint = block_on(scatter_integrity::checkpoints::checkpoint(&self.store, partition, &origin, server_key)).map_err(other)?;
         block_on(self.checkpoints.put(partition, &checkpoint)).map_err(other)?;
         Ok(())
@@ -1041,6 +1118,62 @@ mod tests {
         for record in records(&log.store, log.mutable).unwrap() {
             assert!(!String::from_utf8_lossy(&record.header().encode()).contains("example.org"));
         }
+        assert_eq!(log.verify(&server_key.verifying_key()).unwrap(), 0);
+    }
+
+    #[test]
+    fn the_servers_key_is_rotated_by_a_record_the_old_key_signs() {
+        let (_dir, mut log, first) = log();
+        let alice = iri("http://example.org/alice");
+        log.register_key(&alice, &keys::generate().verifying_key(), &first).unwrap();
+        let second = keys::generate();
+
+        // Only the current key can hand over, and not to a key the server had before
+        let error = log.rotate_server_key(&second, &keys::generate()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(log.rotate_server_key(&first, &first).is_err());
+
+        log.rotate_server_key(&second, &first).unwrap();
+        assert_eq!(log.server_key(), second.verifying_key());
+        assert_eq!(log.server_keys().iter().map(|(_, key)| *key).collect::<Vec<_>>(), [first.verifying_key(), second.verifying_key()]);
+
+        // The old key writes no more; the new one does
+        let bob = iri("http://example.org/bob");
+        let error = log.register_key(&bob, &keys::generate().verifying_key(), &first).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        log.register_key(&bob, &keys::generate().verifying_key(), &second).unwrap();
+
+        // What each key attested and checkpointed verifies under the chain, and the log
+        // answers to its current key alone
+        assert_eq!(log.verify(&second.verifying_key()).unwrap(), 0);
+        assert!(log.verify(&first.verifying_key()).is_err());
+
+        // A second rotation extends the chain
+        let third = keys::generate();
+        log.rotate_server_key(&third, &second).unwrap();
+        assert_eq!(log.server_keys().len(), 3);
+        assert_eq!(log.verify(&third.verifying_key()).unwrap(), 0);
+    }
+
+    #[test]
+    fn keys_are_revoked_one_at_a_time_and_can_expire() {
+        let (_dir, mut log, server_key) = log();
+        let alice = iri("http://example.org/alice");
+        let kept = log.register_key(&alice, &keys::generate().verifying_key(), &server_key).unwrap();
+        let dropped = log.register_key(&alice, &keys::generate().verifying_key(), &server_key).unwrap();
+
+        assert_eq!(log.revoke_key(&alice, "no such key", &server_key).unwrap(), None);
+        assert_eq!(log.revoke_key(&alice, &dropped.key_id, &server_key).unwrap(), Some(dropped.clone()));
+        assert_eq!(log.revoke_key(&alice, &dropped.key_id, &server_key).unwrap(), None);
+        assert_eq!(log.current_keys(&alice).unwrap(), [kept.clone()]);
+
+        // A key that expires is valid until then, and one already expired is not registered
+        let soon = Timestamp(now().as_micros() + 3_600_000_000);
+        let expiring = log.register_key_until(&alice, &keys::generate().verifying_key(), Some(soon), &server_key).unwrap();
+        assert!(expiring.is_valid_at(now()));
+        assert!(!expiring.is_valid_at(Timestamp(soon.as_micros() + 1)));
+        assert!(log.register_key_until(&alice, &keys::generate().verifying_key(), Some(Timestamp(1)), &server_key).is_err());
+        assert_eq!(log.current_keys(&alice).unwrap().len(), 2);
         assert_eq!(log.verify(&server_key.verifying_key()).unwrap(), 0);
     }
 
