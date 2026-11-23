@@ -1,28 +1,31 @@
-use std::env;
-use std::fs;
-use dotenv::dotenv;
+//! The `scatterbase` command-line interface: argument dispatch, prompts and help text.
+//! Everything it does to data goes through `scatterbase-kernel`.
 
-use scatterbase::cli::{
+mod claim;
+mod cli;
+mod domain;
+mod init;
+mod key;
+mod prefix;
+mod purge;
+mod term;
+mod triple;
+
+#[cfg(test)]
+mod test_triple_write;
+
+use crate::cli::{
     print_help, print_init_help, print_domain_help, print_triple_help,
     print_claim_help, print_prefix_help, print_purge_help, get_env_path,
-    prompt_for_domain, prompt_for_storage_file, prompt_for_env_file,
-    prompt_for_server_uri
 };
-use scatterbase::key::{handle_key_add_command, print_key_help};
-use scatterbase::term::{handle_term_latest_command, print_term_help};
-use scatterbase::domain::{handle_domain_init_command, create_env_file, create_initial_triple, create_initial_claim};
-use scatterbase::utils::{
-    ensure_directory_exists
-};
-use scatterbase::constants::DEFAULT_PREFIX_FILE;
-use scatterbase::claim::{handle_claim_prepare_command, handle_claim_submit_command, handle_claim_write_command};
-use scatterbase::prefix::{handle_prefix_add_command, init_prefix_file};
-use scatterbase::triple::{Triple, handle_triple_write_command};
-use scatterbase::uri::Uri;
-use scatterbase::literal::Literal;
-use scatterbase::storage::{Storage, NtFileStorage};
-use scatterbase::init::handle_init_command;
-use scatterbase::purge::handle_purge_command;
+use crate::key::{handle_key_add_command, print_key_help};
+use crate::term::{handle_term_latest_command, print_term_help};
+use crate::domain::handle_domain_init_command;
+use crate::claim::{handle_claim_prepare_command, handle_claim_submit_command, handle_claim_write_command};
+use crate::prefix::handle_prefix_add_command;
+use crate::triple::handle_triple_write_command;
+use crate::init::handle_init_command;
+use crate::purge::handle_purge_command;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

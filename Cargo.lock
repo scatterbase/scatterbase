@@ -24,12 +24,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
-name = "base64"
-version = "0.21.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
-
-[[package]]
 name = "base64ct"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -459,10 +453,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a0d197bd2c9dc6e53b84da9556a69ba4cdfab8619eb41a8bd1cc2027a0f6b1d"
 
 [[package]]
-name = "scatterbase"
+name = "scatterbase-cli"
 version = "0.1.0"
 dependencies = [
- "base64",
+ "chrono",
+ "dotenv",
+ "ed25519-dalek",
+ "scatterbase-kernel",
+]
+
+[[package]]
+name = "scatterbase-kernel"
+version = "0.1.0"
+dependencies = [
  "chrono",
  "data-encoding",
  "dotenv",

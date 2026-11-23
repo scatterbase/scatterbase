@@ -1,9 +1,9 @@
 use std::env;
 use std::io::{self, Write};
-use crate::storage::generate_default_domain;
-use crate::uri::Uri;
-use crate::triple::Triple;
-use crate::constants::*;
+use scatterbase_kernel::storage::generate_default_domain;
+use scatterbase_kernel::uri::Uri;
+use scatterbase_kernel::triple::Triple;
+use scatterbase_kernel::constants::*;
 
 // Constants are now in the constants module
 

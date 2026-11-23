@@ -6,10 +6,11 @@ use crate::cli::{
     prompt_for_domain, prompt_for_storage_file, prompt_for_env_file,
     prompt_for_server_uri
 };
-use crate::constants::{DEFAULT_STORAGE_FILE, DEFAULT_ENV_FILE};
-use crate::domain::{create_env_file, create_initial_claim};
-use crate::storage::{NtFileStorage, Storage};
-use crate::prefix::init_prefix_file;
+use scatterbase_kernel::constants::{DEFAULT_STORAGE_FILE, DEFAULT_ENV_FILE};
+use crate::domain::create_env_file;
+use scatterbase_kernel::domain::create_initial_claim;
+use scatterbase_kernel::storage::{NtFileStorage, Storage};
+use scatterbase_kernel::prefix::init_prefix_file;
 
 /// Handles the "init" command
 /// 
@@ -19,7 +20,7 @@ pub fn handle_init_command(use_defaults: bool) {
 
     // Get domain (prompt or use default)
     let domain = if use_defaults {
-        let domain = crate::storage::generate_default_domain();
+        let domain = scatterbase_kernel::storage::generate_default_domain();
         println!("Using domain: {}", domain);
         domain
     } else {

@@ -1,12 +1,8 @@
-use std::io::{BufReader, Cursor};
+use std::io::BufReader;
 use std::collections::HashMap;
 
 use crate::storage::{MockStorage, Storage};
-use crate::claim::{parse_ntriples, parse_turtle};
-use crate::triple::Triple;
-use crate::uri::Uri;
-use crate::tests::test_data::{MOCK_PUBLIC_KEY, MOCK_PRIVATE_KEY, MOCK_PREFIXES_CONTENT};
-use crate::crypto::hash_string;
+use crate::claim::parse_ntriples;
 
 // Mock implementation of find_latest_claim_hash_for_term that works with MockStorage
 fn mock_find_latest_claim_hash_for_term(mock_storage: &MockStorage, term: &str) -> String {

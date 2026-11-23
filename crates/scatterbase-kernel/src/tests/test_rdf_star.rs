@@ -3,9 +3,6 @@ use std::collections::HashMap;
 
 use crate::claim::parse_turtle;
 use crate::term::Term;
-use crate::uri::Uri;
-use crate::literal::Literal;
-use crate::triple::Triple;
 use crate::tests::test_data::RDF_STAR_TEST_CONTENT;
 
 #[test]

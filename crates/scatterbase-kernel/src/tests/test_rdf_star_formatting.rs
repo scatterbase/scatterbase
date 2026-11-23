@@ -1,6 +1,5 @@
 use crate::uri::Uri;
 use crate::triple::Triple;
-use crate::term::Term;
 use crate::literal::Literal;
 
 #[test]

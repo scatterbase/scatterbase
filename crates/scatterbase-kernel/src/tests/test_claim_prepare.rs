@@ -1,12 +1,11 @@
-use std::io::{BufReader, Cursor};
+use std::io::BufReader;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::storage::{MockStorage, Storage};
-use crate::claim::{parse_turtle, parse_ntriples};
+use crate::claim::parse_turtle;
 use crate::triple::Triple;
 use crate::uri::Uri;
-use crate::tests::test_data::{MOCK_PUBLIC_KEY, MOCK_PRIVATE_KEY, MOCK_PREFIXES_CONTENT};
 use crate::crypto::hash_string;
 
 #[test]

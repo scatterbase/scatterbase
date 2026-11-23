@@ -1,11 +1,9 @@
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 use std::path::Path;
-use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier, SecretKey};
+use ed25519_dalek::{SigningKey, VerifyingKey, Signer};
 use rand::rngs::OsRng;
 use rand::RngCore;
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine;
 use sha2::{Sha256, Digest};
 use data_encoding::Specification;
 use dotenv::dotenv;

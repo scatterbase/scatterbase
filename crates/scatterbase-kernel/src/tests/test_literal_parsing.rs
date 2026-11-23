@@ -1,12 +1,5 @@
 use std::io::Cursor;
 use std::collections::HashMap;
-use rio_api::model::Triple as RioTriple;
-use rio_api::parser::TriplesParser;
-use rio_turtle::NTriplesParser;
-use crate::uri::Uri;
-use crate::literal::Literal;
-use crate::triple::Triple;
-use crate::term::Term;
 use crate::claim::parse_ntriples;
 
 #[test]

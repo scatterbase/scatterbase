@@ -1,14 +1,23 @@
-[package]
-name = "scatterbase"
+[workspace]
+resolver = "2"
+members = [
+    "crates/scatterbase-kernel",
+    "crates/scatterbase-cli",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/scatterbase/scatterbase"
 
-[dependencies]
+[workspace.dependencies]
+scatterbase-kernel = { path = "crates/scatterbase-kernel" }
+
 rand = "0.8.5"
 dotenv = "0.15.0"
 ed25519-dalek = "2.0.0"
 rand_core = "0.6.4"
-base64 = "0.21.0"
 sha2 = "0.10.7"
 data-encoding = "2.4.0"
 chrono = "0.4.26"

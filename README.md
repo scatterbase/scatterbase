@@ -26,6 +26,13 @@ cargo build --release
 
 The binary will be available at `target/release/scatterbase`.
 
+## Repository Layout
+
+The repository is a Cargo workspace:
+
+- `crates/scatterbase-kernel` — the library: RDF terms and triples, claim envelopes, hashing, keys and storage.
+- `crates/scatterbase-cli` — the `scatterbase` binary: argument dispatch, prompts, help text and the command handlers.
+
 ## Usage
 
 ### Getting Started
@@ -115,4 +122,4 @@ Scatterbase is currently in active development. Below is the status of core comp
 
 ## License
 
-[Specify License Here, e.g., MIT or Apache-2.0]
+GPL-3.0-or-later. See [LICENSE](LICENSE).

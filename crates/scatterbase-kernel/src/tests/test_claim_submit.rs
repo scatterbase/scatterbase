@@ -1,16 +1,14 @@
-use std::io::{BufReader, Cursor};
+use std::io::BufReader;
 use std::collections::HashMap;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
 use rand::RngCore;
-use rand::Rng;
 use data_encoding::{Specification, Encoding};
 
 use crate::storage::{MockStorage, Storage};
-use crate::claim::{parse_ntriples, parse_turtle};
+use crate::claim::parse_ntriples;
 use crate::triple::Triple;
 use crate::uri::Uri;
-use crate::tests::test_data::{MOCK_PUBLIC_KEY, MOCK_PRIVATE_KEY, MOCK_PREFIXES_CONTENT};
 use crate::crypto::hash_string;
 
 // Define Base32z encoding specification

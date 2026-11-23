@@ -1,14 +1,12 @@
 use std::fs;
-use std::io::{self, Write};
-use std::path::Path;
-use ed25519_dalek::{SigningKey, VerifyingKey};
-use crate::uri::Uri;
-use crate::uri::rdf;
-use crate::uri::scatter;
-use crate::triple::Triple;
-use crate::crypto::{get_server_signing_key, derive_key_from_server, BASE32Z};
-use crate::claim::{ClaimEnvelope, hash_triple, generate_claim_hash};
-use crate::storage::Storage;
+use std::io::{self};
+use ed25519_dalek::SigningKey;
+use scatterbase_kernel::uri::Uri;
+use scatterbase_kernel::uri::rdf;
+use scatterbase_kernel::uri::scatter;
+use scatterbase_kernel::triple::Triple;
+use scatterbase_kernel::crypto::{get_server_signing_key, derive_key_from_server, BASE32Z};
+use scatterbase_kernel::claim::{ClaimEnvelope, hash_triple, generate_claim_hash};
 use std::collections::HashMap;
 
 /// Handles the "key add" command
@@ -111,7 +109,7 @@ pub fn handle_key_add_command(args: &[String], env_path: &str) -> io::Result<()>
     }
 
     // Check if the attribution URI already has a key
-    match crate::term::find_latest_public_key_for_attribution(&storage_file, &attribution) {
+    match scatterbase_kernel::term::find_latest_public_key_for_attribution(&storage_file, &attribution) {
         Ok(Some(_)) => {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -250,7 +248,7 @@ pub fn handle_key_add_command(args: &[String], env_path: &str) -> io::Result<()>
     let canonical_nt = temp_envelope.to_ntriples();
 
     // Sign the canonical NT representation with the server key
-    let signature = crate::crypto::sign_with_key(&server_key, &canonical_nt);
+    let signature = scatterbase_kernel::crypto::sign_with_key(&server_key, &canonical_nt);
 
     // Create the final ClaimEnvelope with the signature
     let envelope = ClaimEnvelope {
@@ -268,7 +266,7 @@ pub fn handle_key_add_command(args: &[String], env_path: &str) -> io::Result<()>
     };
 
     // Submit the claim
-    crate::claim::handle_claim_submit_envelope(envelope, &storage_file)?;
+    scatterbase_kernel::claim::handle_claim_submit_envelope(envelope, &storage_file)?;
 
     println!("Key registered for attribution URI: {}", attribution);
     println!("Public key: {}", pubkey_uri);

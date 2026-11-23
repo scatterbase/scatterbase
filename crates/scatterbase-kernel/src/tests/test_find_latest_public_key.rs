@@ -1,5 +1,4 @@
 use std::io::Write;
-use std::fs::File;
 use tempfile::NamedTempFile;
 use crate::term::find_latest_public_key_for_attribution;
 

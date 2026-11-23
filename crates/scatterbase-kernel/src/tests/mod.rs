@@ -7,8 +7,6 @@ mod test_blank_nodes;
 #[cfg(test)]
 mod test_claim_prepare;
 #[cfg(test)]
-mod test_triple_write;
-#[cfg(test)]
 mod test_literal_parsing;
 #[cfg(test)]
 mod test_rdf_star;

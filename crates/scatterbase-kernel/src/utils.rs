@@ -1,9 +1,7 @@
-use std::io::{self, Write, BufRead};
-use std::fs::{self, File, Permissions, create_dir_all};
+use std::io::{self};
+use std::fs::create_dir_all;
 use std::path::Path;
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 
 
 /// Ensures that the directory for a file exists

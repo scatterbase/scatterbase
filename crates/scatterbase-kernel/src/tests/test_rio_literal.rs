@@ -1,5 +1,4 @@
 use std::io::Cursor;
-use rio_api::model::Triple as RioTriple;
 use rio_api::parser::TriplesParser;
 use rio_turtle::NTriplesParser;
 

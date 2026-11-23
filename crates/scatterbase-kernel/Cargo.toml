@@ -1,0 +1,22 @@
+[package]
+name = "scatterbase-kernel"
+description = "The Scatterbase kernel: RDF terms and triples, signed claim envelopes, keys and storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rand.workspace = true
+dotenv.workspace = true
+ed25519-dalek.workspace = true
+rand_core.workspace = true
+sha2.workspace = true
+data-encoding.workspace = true
+chrono.workspace = true
+rio_api.workspace = true
+rio_turtle.workspace = true
+lazy_static.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
