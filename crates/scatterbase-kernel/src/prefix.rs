@@ -5,8 +5,7 @@ use std::collections::HashMap;
 use std::env;
 use dotenv::dotenv;
 
-use crate::uri::rdf;
-use crate::uri::vocab;
+use scatter_vocab::{foaf, owl, rdf, rdfs, xsd};
 use crate::utils::{ensure_directory_exists};
 use crate::constants::DEFAULT_PREFIX_FILE;
 
@@ -93,12 +92,12 @@ pub fn init_prefix_file() -> io::Result<()> {
     let mut file = File::create(&prefix_file)?;
 
     // Write standard RDF prefixes
-    writeln!(file, "@prefix rdf: <{}> .", rdf::TYPE.strip_suffix("type").unwrap_or(rdf::TYPE))?;
-    writeln!(file, "@prefix rdfs: <{}> .", rdf::RDFS)?;
-    writeln!(file, "@prefix xsd: <{}> .", rdf::XSD)?;
-    writeln!(file, "@prefix owl: <{}> .", rdf::OWL)?;
-    writeln!(file, "@prefix foaf: <{}> .", vocab::FOAF)?;
-    writeln!(file, "@prefix dc: <{}> .", vocab::DC)?;
+    writeln!(file, "@prefix rdf: <{}> .", rdf::NS)?;
+    writeln!(file, "@prefix rdfs: <{}> .", rdfs::NS)?;
+    writeln!(file, "@prefix xsd: <{}> .", xsd::NS)?;
+    writeln!(file, "@prefix owl: <{}> .", owl::NS)?;
+    writeln!(file, "@prefix foaf: <{}> .", foaf::NS)?;
+    writeln!(file, "@prefix dc: <{}> .", "http://purl.org/dc/elements/1.1/")?;
 
     println!("Initialized prefix file with standard RDF prefixes: {}", prefix_file);
 

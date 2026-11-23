@@ -3,10 +3,10 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+use oxrdf::vocab::rdf;
 use oxrdf::{BlankNode, NamedNode, NamedOrBlankNode, Term, Triple};
 
 use crate::id::{sha256, ClaimId, TripleHash};
-use crate::rdf::vocab;
 use crate::ClaimError;
 
 /// The first line of the claim ID preimage.
@@ -192,7 +192,7 @@ fn replace_terms(parsed: &[Triple], base: &str, segment: &str) -> Result<Vec<Tri
     let mut triples = Vec::new();
 
     for triple in parsed {
-        if triple.predicate.as_ref() == vocab::RDF_REIFIES {
+        if triple.predicate.as_ref() == rdf::REIFIES {
             if let (NamedOrBlankNode::BlankNode(reifier), Term::Triple(quoted)) = (&triple.subject, &triple.object) {
                 let quoted = replace_in_triple(quoted, base, segment, &reifiers)?;
                 reifiers.insert(reifier.as_str().to_string(), TripleHash::of(&quoted).iri());
@@ -421,7 +421,7 @@ mod tests {
         let reifier = BlankNode::default();
         let since = iri("http://schema.org/startDate");
         let parsed = vec![
-            Triple::new(reifier.clone(), vocab::RDF_REIFIES.into_owned(), Term::Triple(Box::new(quoted.clone()))),
+            Triple::new(reifier.clone(), rdf::REIFIES.into_owned(), Term::Triple(Box::new(quoted.clone()))),
             Triple::new(reifier, since.clone(), Literal::new_simple_literal("2020")),
             Triple::new(iri("http://example.org/c"), iri("http://schema.org/about"), Term::Triple(Box::new(quoted.clone()))),
         ];

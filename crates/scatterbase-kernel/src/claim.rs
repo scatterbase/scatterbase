@@ -28,7 +28,7 @@ use crate::log::ClaimLog;
 use crate::lookup::Snapshot;
 use crate::prefix::expand_prefix;
 use crate::projection;
-use crate::uri::{parse_iri, scatter};
+use crate::uri::parse_iri;
 
 /// Reads triples from a file: Turtle if its name ends in `.ttl`, N-Triples otherwise.
 pub fn read_triples_from_file(file_path: &str, prefixes: &HashMap<String, String>) -> io::Result<Vec<Triple>> {
@@ -201,7 +201,7 @@ fn founding_key(offset: u64, claim: &Claim) -> Option<VerifyingKey> {
     }
     let actor = NamedOrBlankNode::from(claim.attribution().clone());
     claim.triples().iter()
-        .filter(|t| t.subject == actor && t.predicate.as_str() == scatter::HAS_PUBLIC_KEY)
+        .filter(|t| t.subject == actor && t.predicate.as_ref() == scatter_vocab::scatter::HAS_PUBLIC_KEY)
         .find_map(|t| match &t.object {
             Term::NamedNode(key_iri) => public_key_from_iri(key_iri.as_ref()),
             _ => None,

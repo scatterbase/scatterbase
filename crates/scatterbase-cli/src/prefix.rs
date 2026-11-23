@@ -6,7 +6,7 @@ use std::path::Path;
 use std::env;
 use dotenv::dotenv;
 
-use scatterbase_kernel::uri::rdf;
+use scatter_vocab::rdf;
 use scatterbase_kernel::utils::ensure_directory_exists;
 use scatterbase_kernel::constants::DEFAULT_PREFIX_FILE;
 use crate::cli::prompt_user;
@@ -43,7 +43,7 @@ pub fn handle_prefix_add_command(prefix: &str, uri: &str) {
 
     // If the file is new, write the Turtle preamble
     if !file_exists {
-        if let Err(e) = writeln!(file, "@prefix rdf: <{}> .", rdf::TYPE.strip_suffix("type").unwrap_or(rdf::TYPE)) {
+        if let Err(e) = writeln!(file, "@prefix rdf: <{}> .", rdf::NS) {
             println!("Error writing to prefix file: {}", e);
             return;
         }

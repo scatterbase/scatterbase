@@ -177,11 +177,13 @@ The N-Triples storage file is derived from the log: it holds the RDF form of eve
 
 ### Scatterbase vocabulary (`https://scatter.red/terms/v0/`)
 
+These terms are defined in the `scatter-vocab` crate, which is where the code takes them from.
+
 | IRI | Type | Description |
 |---|---|---|
 | `scatter:ClaimTriple` | Class | A triple as claimed |
 | `scatter:PublicKey` | Class | A registered public key |
-| `scatter:Domain` | Class | The domain of an instance |
+| `scatter:SandboxDomain` | Class | The `.sandbox` domain an instance is given when none is configured |
 | `scatter:claimedIn` | Predicate | From a claimed triple to its claim |
 | `scatter:previousClaim` | Predicate | From a claim to the one before it in the actor's chain |
 | `scatter:userSignature` | Predicate | The actor's signature |

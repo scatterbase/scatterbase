@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 oxrdf.workspace = true
+scatter-vocab.workspace = true
 sha2.workspace = true
 ed25519-dalek.workspace = true
 data-encoding.workspace = true

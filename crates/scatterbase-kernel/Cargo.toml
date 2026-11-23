@@ -19,6 +19,7 @@ sha2.workspace = true
 data-encoding.workspace = true
 chrono.workspace = true
 oxrdf.workspace = true
+scatter-vocab.workspace = true
 oxttl.workspace = true
 
 [dev-dependencies]

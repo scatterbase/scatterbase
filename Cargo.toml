@@ -23,10 +23,12 @@ rand_core = "0.6.4"
 sha2 = "0.10.7"
 data-encoding = "2.4.0"
 chrono = "0.4.26"
-# The shared log crates. They are not on crates.io yet, so they are taken from the
-# triplespace repository at a pinned commit.
-scatter-log = { git = "https://github.com/scatterbase/triplespace", rev = "7129144e1bf4e8ca86b2ca838a7657a267a3a6c0" }
-scatter-integrity = { git = "https://github.com/scatterbase/triplespace", rev = "7129144e1bf4e8ca86b2ca838a7657a267a3a6c0" }
+# The shared scatter crates, taken from the triplespace repository at one pinned commit:
+# the log crates are not on crates.io yet, and scatter-vocab's published version predates
+# the claim and key terms.
+scatter-vocab = { git = "https://github.com/scatterbase/triplespace", rev = "7839c357743fa2024bdb88bbff7dac4ae3e89f68" }
+scatter-log = { git = "https://github.com/scatterbase/triplespace", rev = "7839c357743fa2024bdb88bbff7dac4ae3e89f68" }
+scatter-integrity = { git = "https://github.com/scatterbase/triplespace", rev = "7839c357743fa2024bdb88bbff7dac4ae3e89f68" }
 # Driving the log's futures from synchronous code: the file backend does its I/O inline
 pollster = "1"
 

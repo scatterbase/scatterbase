@@ -34,76 +34,19 @@
 
 use std::collections::BTreeSet;
 
+use oxrdf::vocab::{rdf, xsd};
 use oxrdf::{Literal, NamedNode, NamedNodeRef, NamedOrBlankNode, Term, Triple};
+use scatter_vocab::{prov, scatter};
 
 use crate::claim::compare_triples;
 use crate::id::{ntriples_line, ClaimId, TermHash, TripleHash, CLAIM_NS, TRIPLE_NS};
 use crate::{Acknowledgments, Claim, ClaimError, Envelope, Signature, SignedClaim};
 
-/// The IRIs the envelope's RDF form uses.
-///
-/// The `scatter:` terms are to come from `scatter-vocab` once it publishes them.
-pub mod vocab {
-    use oxrdf::NamedNodeRef;
-
-    /// The `rdf:` namespace.
-    pub const RDF_NS: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
-    /// The `prov:` namespace.
-    pub const PROV_NS: &str = "http://www.w3.org/ns/prov#";
-    /// The `scatter:` namespace.
-    pub const SCATTER_NS: &str = "https://scatter.red/terms/v0/";
-
-    macro_rules! terms {
-        ($($(#[$doc:meta])* $name:ident = $iri:literal;)*) => {
-            $($(#[$doc])* pub const $name: NamedNodeRef<'static> = NamedNodeRef::new_unchecked($iri);)*
-        };
-    }
-
-    terms! {
-        /// `rdf:type`
-        RDF_TYPE = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
-        /// `rdf:Statement`
-        RDF_STATEMENT = "http://www.w3.org/1999/02/22-rdf-syntax-ns#Statement";
-        /// `rdf:subject`
-        RDF_SUBJECT = "http://www.w3.org/1999/02/22-rdf-syntax-ns#subject";
-        /// `rdf:predicate`
-        RDF_PREDICATE = "http://www.w3.org/1999/02/22-rdf-syntax-ns#predicate";
-        /// `rdf:object`
-        RDF_OBJECT = "http://www.w3.org/1999/02/22-rdf-syntax-ns#object";
-        /// `rdf:reifies`, from a reifier to the triple term it reifies (RDF 1.2)
-        RDF_REIFIES = "http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies";
-        /// `xsd:dateTime`
-        XSD_DATE_TIME = "http://www.w3.org/2001/XMLSchema#dateTime";
-        /// `prov:wasAttributedTo`, from a claim to the actor making it
-        PROV_WAS_ATTRIBUTED_TO = "http://www.w3.org/ns/prov#wasAttributedTo";
-        /// `prov:generatedAtTime`, from a claim to when a server accepted it
-        PROV_GENERATED_AT_TIME = "http://www.w3.org/ns/prov#generatedAtTime";
-        /// `scatter:ClaimTriple`, the class of a triple as claimed
-        CLAIM_TRIPLE = "https://scatter.red/terms/v0/ClaimTriple";
-        /// `scatter:claimedIn`, from a claimed triple to its claim
-        CLAIMED_IN = "https://scatter.red/terms/v0/claimedIn";
-        /// `scatter:previousClaim`, from a claim to the one before it in the actor's chain
-        PREVIOUS_CLAIM = "https://scatter.red/terms/v0/previousClaim";
-        /// `scatter:userSignature`, the actor's signature
-        USER_SIGNATURE = "https://scatter.red/terms/v0/userSignature";
-        /// `scatter:serverSignature`, the accepting server's signature
-        SERVER_SIGNATURE = "https://scatter.red/terms/v0/serverSignature";
-        /// `scatter:seqID`, the sequence ID the accepting server assigned
-        SEQ_ID = "https://scatter.red/terms/v0/seqID";
-        /// `scatter:term`, from an acknowledgment to the term it is about
-        TERM = "https://scatter.red/terms/v0/term";
-        /// `scatter:priorClaim`, from an acknowledgment to the claim that last used the term
-        PRIOR_CLAIM = "https://scatter.red/terms/v0/priorClaim";
-        /// `scatter:acknowledgesPriorUse`, from a claim to each of its acknowledgments
-        ACKNOWLEDGES_PRIOR_USE = "https://scatter.red/terms/v0/acknowledgesPriorUse";
-    }
-}
-
 /// The prefixes the Turtle form declares, in the order it declares them.
 const PREFIXES: [(&str, &str); 5] = [
-    ("rdf", vocab::RDF_NS),
-    ("prov", vocab::PROV_NS),
-    ("scatter", vocab::SCATTER_NS),
+    ("rdf", scatter_vocab::rdf::NS),
+    ("prov", prov::NS),
+    ("scatter", scatter::NS),
     ("scatter_triple", TRIPLE_NS),
     ("scatter_claim", CLAIM_NS),
 ];
@@ -132,7 +75,7 @@ impl Envelope {
     pub fn from_triples(triples: &[Triple]) -> Result<Self, ClaimError> {
         let graph = Graph(triples);
         let candidates: BTreeSet<ClaimId> = triples.iter()
-            .filter(|t| t.predicate.as_ref() == vocab::USER_SIGNATURE)
+            .filter(|t| t.predicate.as_ref() == scatter::USER_SIGNATURE)
             .filter_map(|t| claim_id_of(&t.subject))
             .collect();
 
@@ -156,28 +99,28 @@ impl Envelope {
 
         for triple in claim.triples() {
             let hash_iri = TripleHash::of(triple).iri();
-            about.push(Triple::new(hash_iri.clone(), vocab::CLAIMED_IN, claim_iri.clone()));
-            about.push(Triple::new(hash_iri.clone(), vocab::RDF_TYPE, vocab::CLAIM_TRIPLE));
-            about.push(Triple::new(hash_iri.clone(), vocab::RDF_TYPE, vocab::RDF_STATEMENT));
-            about.push(Triple::new(hash_iri.clone(), vocab::RDF_SUBJECT, triple.subject.clone()));
-            about.push(Triple::new(hash_iri.clone(), vocab::RDF_PREDICATE, triple.predicate.clone()));
-            about.push(Triple::new(hash_iri, vocab::RDF_OBJECT, triple.object.clone()));
+            about.push(Triple::new(hash_iri.clone(), scatter::CLAIMED_IN, claim_iri.clone()));
+            about.push(Triple::new(hash_iri.clone(), rdf::TYPE, scatter::CLAIM_TRIPLE));
+            about.push(Triple::new(hash_iri.clone(), rdf::TYPE, rdf::STATEMENT));
+            about.push(Triple::new(hash_iri.clone(), rdf::SUBJECT, triple.subject.clone()));
+            about.push(Triple::new(hash_iri.clone(), rdf::PREDICATE, triple.predicate.clone()));
+            about.push(Triple::new(hash_iri, rdf::OBJECT, triple.object.clone()));
         }
 
-        about.push(Triple::new(claim_iri.clone(), vocab::PROV_WAS_ATTRIBUTED_TO, claim.attribution().clone()));
-        about.push(Triple::new(claim_iri.clone(), vocab::PREVIOUS_CLAIM, claim.previous().iri()));
+        about.push(Triple::new(claim_iri.clone(), prov::WAS_ATTRIBUTED_TO, claim.attribution().clone()));
+        about.push(Triple::new(claim_iri.clone(), scatter::PREVIOUS_CLAIM, claim.previous().iri()));
 
         for (term, prior) in self.acknowledgments() {
             let ack_iri = TermHash::of(term.as_ref()).ack_iri(&id);
-            about.push(Triple::new(ack_iri.clone(), vocab::TERM, term.clone()));
-            about.push(Triple::new(ack_iri.clone(), vocab::PRIOR_CLAIM, prior.iri()));
-            about.push(Triple::new(claim_iri.clone(), vocab::ACKNOWLEDGES_PRIOR_USE, ack_iri));
+            about.push(Triple::new(ack_iri.clone(), scatter::TERM, term.clone()));
+            about.push(Triple::new(ack_iri.clone(), scatter::PRIOR_CLAIM, prior.iri()));
+            about.push(Triple::new(claim_iri.clone(), scatter::ACKNOWLEDGES_PRIOR_USE, ack_iri));
         }
         about.sort_by(compare_triples);
 
         let signature = Triple::new(
             claim_iri,
-            vocab::USER_SIGNATURE,
+            scatter::USER_SIGNATURE,
             Literal::new_simple_literal(self.signature().to_string()),
         );
         vec![claim.triples().to_vec(), about, vec![signature]]
@@ -206,9 +149,9 @@ impl SignedClaim {
         let graph = Graph(triples);
         let claim_iri = envelope.id().iri();
 
-        let sequence_id = graph.literal(&claim_iri, vocab::SEQ_ID)?;
-        let timestamp = graph.literal(&claim_iri, vocab::PROV_GENERATED_AT_TIME)?;
-        let server_signature: Signature = graph.literal(&claim_iri, vocab::SERVER_SIGNATURE)?.parse()?;
+        let sequence_id = graph.literal(&claim_iri, scatter::SEQ_ID)?;
+        let timestamp = graph.literal(&claim_iri, prov::GENERATED_AT_TIME)?;
+        let server_signature: Signature = graph.literal(&claim_iri, scatter::SERVER_SIGNATURE)?.parse()?;
         Self::from_parts(envelope, sequence_id, timestamp, server_signature)
     }
 
@@ -218,14 +161,14 @@ impl SignedClaim {
         groups.push(vec![
             Triple::new(
                 claim_iri.clone(),
-                vocab::PROV_GENERATED_AT_TIME,
-                Literal::new_typed_literal(self.timestamp(), vocab::XSD_DATE_TIME),
+                prov::GENERATED_AT_TIME,
+                Literal::new_typed_literal(self.timestamp(), xsd::DATE_TIME),
             ),
-            Triple::new(claim_iri.clone(), vocab::SEQ_ID, Literal::new_simple_literal(self.sequence_id())),
+            Triple::new(claim_iri.clone(), scatter::SEQ_ID, Literal::new_simple_literal(self.sequence_id())),
         ]);
         groups.push(vec![Triple::new(
             claim_iri,
-            vocab::SERVER_SIGNATURE,
+            scatter::SERVER_SIGNATURE,
             Literal::new_simple_literal(self.server_signature().to_string()),
         )]);
         groups
@@ -286,15 +229,15 @@ impl<'a> Graph<'a> {
 
         // The claim's triples, from their reification
         let mut triples = Vec::new();
-        for statement in self.0.iter().filter(|t| t.predicate.as_ref() == vocab::CLAIMED_IN && t.object == claim_term) {
+        for statement in self.0.iter().filter(|t| t.predicate.as_ref() == scatter::CLAIMED_IN && t.object == claim_term) {
             let NamedOrBlankNode::NamedNode(hash_iri) = &statement.subject else { continue };
             let hash = TripleHash::from_iri(hash_iri.as_ref())
                 .ok_or_else(|| ClaimError::Malformed(format!("{hash_iri} is claimed but is not a triple hash")))?;
             triples.push(self.statement(hash_iri, hash)?);
         }
 
-        let attribution = self.iri(&claim_iri, vocab::PROV_WAS_ATTRIBUTED_TO)?.clone();
-        let previous = self.claim_id(&claim_iri, vocab::PREVIOUS_CLAIM)?;
+        let attribution = self.iri(&claim_iri, prov::WAS_ATTRIBUTED_TO)?.clone();
+        let previous = self.claim_id(&claim_iri, scatter::PREVIOUS_CLAIM)?;
         let claim = Claim::new(triples, attribution, previous)?;
         if claim.id() != id {
             return Err(ClaimError::Malformed(format!(
@@ -303,18 +246,18 @@ impl<'a> Graph<'a> {
         }
 
         let mut acknowledgments = Acknowledgments::new();
-        for ack in self.objects(&claim_iri, vocab::ACKNOWLEDGES_PRIOR_USE) {
+        for ack in self.objects(&claim_iri, scatter::ACKNOWLEDGES_PRIOR_USE) {
             let Term::NamedNode(ack_iri) = ack else {
                 return Err(ClaimError::Malformed(format!("the acknowledgment {ack} is not an IRI")));
             };
-            let term = self.iri(ack_iri, vocab::TERM)?;
+            let term = self.iri(ack_iri, scatter::TERM)?;
             if TermHash::of(term.as_ref()).ack_iri(&id) != *ack_iri {
                 return Err(ClaimError::Malformed(format!("{ack_iri} is not the acknowledgment of {term}")));
             }
-            acknowledgments.insert(term.clone(), self.claim_id(ack_iri, vocab::PRIOR_CLAIM)?);
+            acknowledgments.insert(term.clone(), self.claim_id(ack_iri, scatter::PRIOR_CLAIM)?);
         }
 
-        let signature: Signature = self.literal(&claim_iri, vocab::USER_SIGNATURE)?.parse()?;
+        let signature: Signature = self.literal(&claim_iri, scatter::USER_SIGNATURE)?.parse()?;
         Envelope::from_parts(claim, acknowledgments, signature)
     }
 
@@ -324,11 +267,11 @@ impl<'a> Graph<'a> {
     /// may itself say something about a reified triple, so the subject, predicate and
     /// object are whichever of those present hash to the triple hash.
     fn statement(&self, hash_iri: &'a NamedNode, hash: TripleHash) -> Result<Triple, ClaimError> {
-        for subject in self.objects(hash_iri, vocab::RDF_SUBJECT) {
+        for subject in self.objects(hash_iri, rdf::SUBJECT) {
             let Term::NamedNode(subject) = subject else { continue };
-            for predicate in self.objects(hash_iri, vocab::RDF_PREDICATE) {
+            for predicate in self.objects(hash_iri, rdf::PREDICATE) {
                 let Term::NamedNode(predicate) = predicate else { continue };
-                for object in self.objects(hash_iri, vocab::RDF_OBJECT) {
+                for object in self.objects(hash_iri, rdf::OBJECT) {
                     let triple = Triple::new(subject.clone(), predicate.clone(), object.clone());
                     if TripleHash::of(&triple) == hash {
                         return Ok(triple);
@@ -432,7 +375,7 @@ mod tests {
     fn a_changed_triple_does_not_read_back() {
         let envelope = envelope();
         let changed: Vec<Triple> = envelope.to_triples().into_iter()
-            .map(|t| if t.predicate.as_ref() == vocab::RDF_OBJECT && t.object.is_literal() {
+            .map(|t| if t.predicate.as_ref() == rdf::OBJECT && t.object.is_literal() {
                 Triple::new(t.subject, t.predicate, Literal::new_simple_literal("B"))
             } else {
                 t
@@ -444,7 +387,7 @@ mod tests {
     #[test]
     fn a_changed_attribution_does_not_read_back() {
         let changed: Vec<Triple> = envelope().to_triples().into_iter()
-            .map(|t| if t.predicate.as_ref() == vocab::PROV_WAS_ATTRIBUTED_TO {
+            .map(|t| if t.predicate.as_ref() == prov::WAS_ATTRIBUTED_TO {
                 Triple::new(t.subject, t.predicate, iri("http://example.org/mallory"))
             } else {
                 t

@@ -19,7 +19,7 @@ use rand::RngCore;
 use scatter_claims::id::{zbase32, zbase32_decode};
 use sha2::{Digest, Sha256};
 
-use crate::uri::{rdf, scatter};
+use scatter_vocab::{rdf, scatter};
 
 /// The IRI prefix of a public key.
 pub const PUBLIC_KEY_NS: &str = "urn:ed25519:";
@@ -87,10 +87,10 @@ pub fn public_key_from_iri(iri: NamedNodeRef<'_>) -> Option<VerifyingKey> {
 pub fn registration(actor: &NamedNode, key: &VerifyingKey) -> Vec<Triple> {
     let key_iri = public_key_iri(key);
     vec![
-        Triple::new(actor.clone(), scatter::HAS_PUBLIC_KEY_URI.clone(), key_iri.clone()),
-        Triple::new(key_iri.clone(), rdf::TYPE_URI.clone(), scatter::PUBLIC_KEY_URI.clone()),
-        Triple::new(key_iri.clone(), scatter::KEY_TYPE_URI.clone(), scatter::ED25519_URI.clone()),
-        Triple::new(key_iri, scatter::OWNER_URI.clone(), actor.clone()),
+        Triple::new(actor.clone(), scatter::HAS_PUBLIC_KEY, key_iri.clone()),
+        Triple::new(key_iri.clone(), rdf::TYPE, scatter::PUBLIC_KEY),
+        Triple::new(key_iri.clone(), scatter::KEY_TYPE, scatter::ED25519),
+        Triple::new(key_iri, scatter::OWNER, actor.clone()),
     ]
 }
 

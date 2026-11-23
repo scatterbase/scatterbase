@@ -17,8 +17,7 @@
 //!   assigned and its signature over them.
 //! - [`rdf`]: the envelope as triples, read back from triples, and as N-Triples and Turtle.
 //!
-//! RDF terms are [`oxrdf`]'s. The `scatter:` terms used here are declared in [`rdf::vocab`]
-//! until they are published in `scatter-vocab`.
+//! RDF terms are [`oxrdf`]'s, and the `scatter:` and `prov:` terms are `scatter-vocab`'s.
 
 mod claim;
 mod envelope;
