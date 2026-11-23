@@ -49,31 +49,35 @@ This command will prompt you for configuration details (domain, storage file pat
 ### Core Commands
 
 #### Domain Management
-Initialize a domain with a default triple:
+Claim, as the server, that a domain is a dataset:
 ```bash
-scatterbase domain init
+scatterbase domain init https://example.org
 ```
 
 #### Triple Management
-Write a single triple directly to the store:
+Claim a single triple, as the actor named by `--attribution`:
 ```bash
-scatterbase triple write <subject> <predicate> <object>
+scatterbase triple write <subject> <predicate> <object> --attribution <actor>
 ```
 
 #### Claim Management
-Claims are the primary unit of signed data in Scatterbase.
+Claims are the primary unit of signed data in Scatterbase. Every claim names who makes it with `--attribution`: an actor with a registered key, or the server's own URI.
 
 - **Prepare a claim**: Create a signed envelope from a set of triples.
   ```bash
-  scatterbase claim prepare --file triples.nt > claim_envelope.ttl
+  scatterbase claim prepare --attribution <actor> --file triples.nt > claim_envelope.ttl
   ```
-- **Submit a claim**: Write a prepared claim envelope to the data store.
+- **Submit a claim**: Verify a prepared claim envelope and append it to the log.
   ```bash
   scatterbase claim submit --file claim_envelope.ttl
   ```
 - **Write a claim (direct)**: Combine prepare and submit in one step.
   ```bash
-  scatterbase claim write --file triples.nt
+  scatterbase claim write --attribution <actor> --file triples.nt
+  ```
+- **Erase parts of a claim**, for good: what was claimed (`content`), who claimed it (`attestation`) or what it acknowledged (`acknowledgments`). The claim keeps its ID, its place in the log and the server's signature.
+  ```bash
+  scatterbase claim erase <claim> --parts content --reason privacy --authority ticket:4411
   ```
 
 #### Key Management
@@ -88,10 +92,16 @@ Revoke an actor's keys, after which `key add` registers a new one:
 scatterbase key revoke --attribution https://example.org/alice
 ```
 
+#### Actors
+Erase an actor from the log, for good: its record and its keys. The claims it made are not touched.
+```bash
+scatterbase actor erase --attribution https://example.org/alice --reason privacy --authority ticket:4412
+```
+
 #### Claim Log
 The log under `data/log` has three partitions. The server partition holds the server's key, as a self-signed founding record, and the registry of the instance's graphs. The mutable partition holds the keys registered for actors. The claim partition holds every accepted claim. The server signs a checkpoint of a partition after each record. The storage file is derived from the claims.
 
-- **Verify the log**: check the server's key chain, the signed checkpoints, every record and every signature.
+- **Verify the log**: check the server's key chain, the signed checkpoints, every record, every signature and that every erased part is accounted for by a record of its erasure.
   ```bash
   scatterbase log verify
   ```

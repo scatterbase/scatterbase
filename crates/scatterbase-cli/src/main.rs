@@ -1,6 +1,7 @@
 //! The `scatterbase` command-line interface: argument dispatch, prompts and help text.
 //! Everything it does to data goes through `scatterbase-kernel`.
 
+mod actor;
 mod claim;
 mod cli;
 mod config;
@@ -24,7 +25,8 @@ use crate::key::{handle_key_add_command, handle_key_revoke_command, print_key_he
 use crate::log::{handle_log_rebuild_command, handle_log_verify_command, print_log_help};
 use crate::term::{handle_term_latest_command, print_term_help};
 use crate::domain::handle_domain_init_command;
-use crate::claim::{handle_claim_prepare_command, handle_claim_submit_command, handle_claim_write_command};
+use crate::actor::{handle_actor_erase_command, print_actor_help};
+use crate::claim::{handle_claim_erase_command, handle_claim_prepare_command, handle_claim_submit_command, handle_claim_write_command};
 use crate::prefix::handle_prefix_add_command;
 use crate::triple::handle_triple_write_command;
 use crate::init::handle_init_command;
@@ -43,6 +45,7 @@ fn main() {
                         "domain" => print_domain_help(),
                         "triple" => print_triple_help(),
                         "claim" => print_claim_help(),
+                        "actor" => print_actor_help(),
                         "key" => print_key_help(),
                         "log" => print_log_help(),
                         "prefix" => print_prefix_help(),
@@ -72,7 +75,7 @@ fn main() {
                         print_triple_help();
                     } else if args[2] == "write" && args.len() >= 6 {
                         let env_path = get_env_path(&args);
-                        handle_triple_write_command(&args[3], &args[4], &args[5], &env_path);
+                        handle_triple_write_command(&args, &env_path);
                     } else {
                         println!("Invalid triple command. Use 'scatterbase help triple' for usage information.");
                     }
@@ -93,6 +96,9 @@ fn main() {
                     } else if args[2] == "write" {
                         let env_path = get_env_path(&args);
                         handle_claim_write_command(&args, &env_path);
+                    } else if args[2] == "erase" {
+                        let env_path = get_env_path(&args);
+                        handle_claim_erase_command(&args, &env_path);
                     } else {
                         println!("Invalid claim command. Use 'scatterbase help claim' for usage information.");
                     }
@@ -157,6 +163,11 @@ fn main() {
                 } else {
                     print_key_help();
                 }
+            },
+            "actor" => match args.get(2).map(String::as_str) {
+                Some("erase") => handle_actor_erase_command(&args, &get_env_path(&args)),
+                Some("help") | Some("--help") | None => print_actor_help(),
+                Some(_) => println!("Invalid actor command. Use 'scatterbase help actor' for usage information."),
             },
             "log" => {
                 let result = match args.get(2).map(String::as_str) {

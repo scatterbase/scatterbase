@@ -2,17 +2,17 @@
 
 use std::io::{self, Write};
 use std::fs::File;
-use std::env;
 
-
-use scatterbase_kernel::utils::ensure_directory_exists;
-use scatterbase_kernel::constants::{DEFAULT_PUBLIC_KEY_FILE, DEFAULT_PREFIX_FILE, DEFAULT_PRIVATE_KEY_FILE};
-use scatterbase_kernel::keys;
 use scatter_claims::id::zbase32;
-use scatterbase_kernel::storage;
-use scatterbase_kernel::triple::TripleExt;
+use scatterbase_kernel::constants::{DEFAULT_PUBLIC_KEY_FILE, DEFAULT_PREFIX_FILE, DEFAULT_PRIVATE_KEY_FILE};
 use scatterbase_kernel::domain::create_initial_triple;
+use scatterbase_kernel::keys;
+use scatterbase_kernel::uri::parse_iri;
+use scatterbase_kernel::utils::ensure_directory_exists;
+
+use crate::claim::{print_accepted, write_claim};
 use crate::cli::{prompt_for_domain, prompt_for_key_file};
+use crate::config::Config;
 
 /// Creates an .env file with the configuration
 /// 
@@ -55,67 +55,36 @@ pub fn create_env_file(env_file: &str, domain: &str, storage_file: &str, server_
     Ok(())
 }
 
-/// Handles the "domain init" command
+/// Handles the "domain init" command: the server claims that a domain is a dataset.
 pub fn handle_domain_init_command(env_path: &str, uri_param: Option<&str>) {
     println!("Initializing a new domain...");
-
-    // Load environment variables from .env file
-    if let Err(e) = dotenv::from_path(env_path) {
-        println!("Error loading .env file at {}: {}", env_path, e);
-        println!("Make sure you've initialized Scatterbase with 'scatterbase init' first.");
-        return;
-    }
-
-    // Get domain - either from parameter, prompt, or environment
-    let domain = if let Some(uri) = uri_param {
-        uri.to_string()
-    } else {
-        // Prompt user for domain if not provided as parameter
-        prompt_for_domain()
+    let config = match Config::load(env_path) {
+        Ok(config) => config,
+        Err(e) => {
+            println!("{}", e);
+            return;
+        },
     };
 
-    // The domain is the subject of the first claim, so it must be an absolute URI
-    if let Err(e) = scatterbase_kernel::uri::parse_iri(&domain) {
+    // Get domain - either from parameter or prompt
+    let domain = match uri_param {
+        Some(uri) => uri.to_string(),
+        None => prompt_for_domain(),
+    };
+    // The domain is the subject of the claim, so it must be an absolute URI
+    if let Err(e) = parse_iri(&domain) {
         println!("Invalid domain: {}", e);
         return;
     }
 
-    // Get storage file from environment
-    let storage_file = match env::var("STORAGE_FILE") {
-        Ok(file) => Some(file),
-        Err(_) => {
-            println!("STORAGE_FILE not set in environment. Output will be sent to stdout.");
-            None
-        }
-    };
-
-    // Create the initial triple
-    let triple = create_initial_triple(&domain);
-
-    // Handle storage based on whether we have a storage file
-    match &storage_file {
-        Some(file_path) => {
-            // Ensure the storage directory exists
-            if let Err(e) = ensure_directory_exists(file_path) {
-                println!("Error creating storage directory: {}", e);
-                return;
+    match write_claim(&config, vec![create_initial_triple(&domain)], config.server.clone(), None) {
+        Ok(signed) => {
+            println!("Domain initialized with a claim by the server:");
+            for triple in signed.envelope().claim().triples() {
+                println!("{} .", triple);
             }
-
-            // Append the triple to the storage file
-            let stored = storage::open(file_path).and_then(|mut store| storage::insert_unclaimed(&mut store, [triple.clone()]));
-            if let Err(e) = stored {
-                println!("Error appending to storage file: {}", e);
-                return;
-            }
-
-            println!("Domain initialized with initial triple:");
-            println!("{}", triple.to_ntriples());
-            println!("Triple appended to storage file: {}", file_path);
+            print_accepted(&signed);
         },
-        None => {
-            // If no storage file is defined, write to stdout
-            println!("Domain initialized with initial triple:");
-            println!("{}", triple.to_ntriples());
-        }
+        Err(e) => println!("{}", e),
     }
 }

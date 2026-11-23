@@ -1,73 +1,37 @@
 //! The `triple` command.
 
-use std::env;
+use oxrdf::{Literal, NamedNode, Triple};
 
-use oxrdf::NamedNode;
-use oxrdf::Literal;
-use oxrdf::Triple;
-use scatterbase_kernel::triple::TripleExt;
-use scatterbase_kernel::storage;
+use crate::claim::{print_accepted, write_claim, Options};
+use crate::config::Config;
 
-/// Handles the "triple write" command
-pub fn handle_triple_write_command(subject: &str, property: &str, object: &str, env_path: &str) {
-    // Load environment variables from .env file
-    if let Err(e) = dotenv::from_path(env_path) {
-        eprintln!("Error loading .env file at {}: {}", env_path, e);
-        eprintln!("Make sure you've initialized Scatterbase with 'scatterbase init' first.");
-        return;
-    }
+/// Handles the "triple write" command: claims one triple as the actor named by
+/// --attribution, as `claim write` does for a file of them.
+pub fn handle_triple_write_command(args: &[String], env_path: &str) {
+    let written = Config::load(env_path).and_then(|config| {
+        let (subject, property, object) = (&args[3], &args[4], &args[5]);
+        let options = Options::parse(args, 6, &["--attribution", "--private-key"])?;
+        let attribution = options.required_attribution()?;
 
-    // Get storage file from environment
-    let storage_file = match env::var("STORAGE_FILE") {
-        Ok(file) => file,
-        Err(_) => {
-            eprintln!("STORAGE_FILE not set in environment. Run 'scatterbase init' first.");
-            return;
-        }
-    };
-
-    // Create URI objects
-    let subject_uri = match NamedNode::new(subject) {
-        Ok(uri) => uri,
-        Err(e) => {
-            eprintln!("Invalid subject URI: {}", e);
-            return;
-        }
-    };
-
-    let property_uri = match NamedNode::new(property) {
-        Ok(uri) => uri,
-        Err(e) => {
-            eprintln!("Invalid property URI: {}", e);
-            return;
-        }
-    };
-
-    // Check if object is a literal (enclosed in quotes) or a URI
-    let triple = if object.starts_with('"') && object.ends_with('"') {
-        // It's a literal - remove the quotes and create a literal object
-        let literal_value = &object[1..object.len()-1];
-        let literal = Literal::new_simple_literal(literal_value);
-        Triple::new(subject_uri, property_uri, literal)
-    } else {
-        // Try to parse as URI
-        let object_uri = match NamedNode::new(object) {
-            Ok(uri) => uri,
-            Err(e) => {
-                eprintln!("Invalid object URI: {}", e);
-                return;
-            }
+        let subject = NamedNode::new(subject.as_str()).map_err(|e| format!("Invalid subject URI: {}", e))?;
+        let property = NamedNode::new(property.as_str()).map_err(|e| format!("Invalid property URI: {}", e))?;
+        // The object is a literal if it is enclosed in quotes, and a URI otherwise
+        let triple = if object.len() >= 2 && object.starts_with('"') && object.ends_with('"') {
+            Triple::new(subject, property, Literal::new_simple_literal(&object[1..object.len() - 1]))
+        } else {
+            let object = NamedNode::new(object.as_str()).map_err(|e| format!("Invalid object URI: {}", e))?;
+            Triple::new(subject, property, object)
         };
-        Triple::new(subject_uri, property_uri, object_uri)
-    };
-
-    // Store the triple
-    let stored = storage::open(&storage_file).and_then(|mut store| storage::insert_unclaimed(&mut store, [triple.clone()]));
-    if let Err(e) = stored {
-        eprintln!("Error storing triple: {}", e);
-        return;
+        write_claim(&config, vec![triple], attribution, options.private_key.as_deref())
+    });
+    match written {
+        Ok(signed) => {
+            println!("Triple claimed successfully:");
+            for triple in signed.envelope().claim().triples() {
+                println!("{} .", triple);
+            }
+            print_accepted(&signed);
+        },
+        Err(e) => eprintln!("{}", e),
     }
-
-    println!("Triple stored successfully:");
-    println!("{}", triple.to_ntriples());
 }

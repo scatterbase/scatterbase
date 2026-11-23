@@ -51,16 +51,33 @@
 //!
 //! A claim is one record of payload type `scatter:v0/claim` in the claim partition. Its
 //! header key is the claim ID in z-base-32 and its `appended_at` is the time the server
-//! accepted it. Its offset is the claim's sequence ID. The body has five parts, each
-//! erasable on its own:
+//! accepted it. Its offset is the claim's sequence ID. The body has five parts:
 //!
-//! | # | Part | CBOR |
-//! |---|---|---|
-//! | 0 | The claim | `{"previous": bytes(32), "triples": [text, …]}`, each triple its N-Triples line, in the claim's order |
-//! | 1 | The attribution | text, the actor's IRI |
-//! | 2 | The client signature | `{"alg": "ed25519", "key": bytes(32), "sig": bytes(64)}`, `key` the public key it verified against |
-//! | 3 | The server signature | `{"alg": "ed25519", "key": bytes(32), "sig": bytes(64), "sequence": text, "timestamp": text}` |
-//! | 4 | The acknowledgments | `[[text, bytes(32)], …]`, term IRI and prior claim ID, in order of the IRI |
+//! | # | Part | CBOR | Erasable |
+//! |---|---|---|---|
+//! | 0 | `content`: the claim | `{"previous": bytes(32), "triples": [text, …]}`, each triple its N-Triples line, in the claim's order | yes |
+//! | 1 | `comment` | `null` | |
+//! | 2 | `attestation`: who claims, and their signature | `{"actor": text, "alg": "ed25519", "key": bytes(32), "sig": bytes(64)}`, `key` the public key the signature verified against | yes |
+//! | 3 | `acknowledgments` | `[[text, bytes(32)], …]`, term IRI and prior claim ID, in order of the IRI | yes |
+//! | 4 | `acceptance`: the server's | `{"alg": "ed25519", "key": bytes(32), "sig": bytes(64), "client": text, "sequence": text, "timestamp": text}`, `client` the digest of the actor's signature | never |
+//!
+//! # Erasure
+//!
+//! Three parts of a claim can be erased, each on its own ([`ClaimPart`]): what was claimed,
+//! who claimed it, and what it acknowledged. The header and the acceptance are always
+//! kept, and they name the claim and the actor's signature by hashes alone, so an erased
+//! claim still has its ID, its place in the log, its time and a server's signature that
+//! verifies. The claims after it, whose chains and acknowledgments point at it, still
+//! point at something the log can prove was there.
+//!
+//! An actor is erased as a whole ([`ClaimLog::erase_actor`]): its actor record and every
+//! key record under its surrogate, leaving the number. That does not touch the claims the
+//! actor made, whose attestations are erased one by one.
+//!
+//! Every erasure is itself recorded, before it is done, as a `scatter:v0/erase` record in
+//! the same partition, saying what was erased, why and on what authority, and attested by
+//! the server. [`ClaimLog::verify`] accepts a missing part only where such a record covers
+//! it.
 
 use std::io;
 
@@ -69,7 +86,7 @@ use oxrdf::{NamedNode, Triple};
 use oxttl::NTriplesParser;
 use pollster::block_on;
 use scatter_claims::id::ntriples_line;
-use scatter_claims::{Acknowledgments, Claim, ClaimId, Envelope, Signature, SignedClaim};
+use scatter_claims::{Acceptance, Acknowledgments, Claim, ClaimId, Redacted, Signature, SignedClaim};
 use scatter_actors::signing::{current_keys, KeyRecord, PublicKey};
 use scatter_actors::{ActorKey, ActorKind, ActorRecord, ActorSurrogates};
 use scatter_actors::time::Timestamp;
@@ -101,15 +118,101 @@ pub const SERVER_PARTITION: u64 = CONFIG_PARTITION;
 /// The segment exponent of both partitions: 2^16 records to a segment file.
 const SEGMENT_EXPONENT: u8 = 16;
 
-/// A claim as the log holds it.
+/// The payload type of a record of an erasure.
+pub const PAYLOAD_ERASE: &str = scatter_integrity::verify::PAYLOAD_ERASE;
+
+/// A part of a claim record that can be erased.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ClaimPart {
+    /// What was claimed: the triples and the previous claim.
+    Content,
+    /// Who claimed it: the actor, the actor's signature and the key it verified against.
+    Attestation,
+    /// What the claim acknowledged: the prior use of each of its terms.
+    Acknowledgments,
+}
+
+impl ClaimPart {
+    /// Every erasable part.
+    pub const ALL: [ClaimPart; 3] = [ClaimPart::Content, ClaimPart::Attestation, ClaimPart::Acknowledgments];
+
+    /// The part's name, as an erase record and the command line write it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            ClaimPart::Content => "content",
+            ClaimPart::Attestation => "attestation",
+            ClaimPart::Acknowledgments => "acknowledgments",
+        }
+    }
+
+    /// The part with a name.
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|part| part.name() == name)
+    }
+
+    /// The part's index in the body of a claim record.
+    const fn index(self) -> usize {
+        match self {
+            ClaimPart::Content => 0,
+            ClaimPart::Attestation => 2,
+            ClaimPart::Acknowledgments => PART_ACKNOWLEDGMENTS,
+        }
+    }
+}
+
+/// The body parts a claim record has after the three every record has, by index from 3.
+const CLAIM_PART_NAMES: [&str; 2] = ["acknowledgments", "acceptance"];
+const PART_ACKNOWLEDGMENTS: usize = 3;
+const PART_ACCEPTANCE: usize = 4;
+
+/// Why something is erased, as its erase record says.
+#[derive(Debug, Clone, Copy)]
+pub struct Reason<'a> {
+    /// The class of reason: `legal`, `privacy`, `upstream` or `operational`.
+    pub class: &'a str,
+    /// What authorizes the erasure, as text: a ticket, a notice, a request.
+    pub authority: &'a str,
+    /// The public reason, if one is given.
+    pub comment: Option<&'a str>,
+}
+
+/// The classes of reason an erasure can have.
+pub const REASON_CLASSES: [&str; 4] = ["legal", "privacy", "upstream", "operational"];
+
+/// A claim as the log holds it: the signed claim, less any part that was erased.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredClaim {
-    /// The signed claim.
-    pub signed: SignedClaim,
-    /// The public key the actor's signature verified against when the claim was accepted.
-    pub actor_key: VerifyingKey,
+    /// The claim's offset in the claim partition, which is its sequence ID.
+    pub offset: u64,
+    /// What is left of the signed claim.
+    pub claim: Redacted,
+    /// The public key the actor's signature verified against when the claim was accepted,
+    /// unless the attestation was erased.
+    pub actor_key: Option<VerifyingKey>,
     /// The public key of the server that accepted it.
     pub server_key: VerifyingKey,
+}
+
+impl StoredClaim {
+    /// The signed claim, if no part of it was erased.
+    pub fn signed(&self) -> Option<SignedClaim> {
+        self.claim.whole().ok().flatten()
+    }
+
+    /// The parts that were erased.
+    pub fn erased(&self) -> Vec<ClaimPart> {
+        let mut erased = Vec::new();
+        if self.claim.claim.is_none() {
+            erased.push(ClaimPart::Content);
+        }
+        if self.claim.attestation.is_none() {
+            erased.push(ClaimPart::Attestation);
+        }
+        if self.claim.acknowledgments.is_none() {
+            erased.push(ClaimPart::Acknowledgments);
+        }
+        erased
+    }
 }
 
 /// The log of an instance.
@@ -327,7 +430,7 @@ impl ClaimLog {
         })
     }
 
-    /// The number of claims in the log, which is the offset the next one takes.
+    /// The size of the claim partition, which is the offset the next claim takes.
     pub fn size(&self) -> io::Result<u64> {
         Ok(block_on(self.store.head(self.partition)).map_err(other)?.size)
     }
@@ -547,18 +650,118 @@ impl ClaimLog {
         Ok(appended.offset)
     }
 
-    /// The claims from offset `from` to the head, each with its offset.
-    pub fn claims(&self, from: u64) -> io::Result<Vec<(u64, StoredClaim)>> {
+    /// The claims from offset `from` of the claim partition to its head. The records of
+    /// erasures, which share the partition, are passed over.
+    pub fn claims(&self, from: u64) -> io::Result<Vec<StoredClaim>> {
         let size = self.size()?;
-        (from..size)
-            .map(|offset| {
-                let slot = block_on(self.store.read(self.partition, offset)).map_err(other)?;
-                let Slot::Record(record) = slot else {
-                    return Err(corrupt(offset, "the record was compacted"));
-                };
-                Ok((offset, claim_of(&record).map_err(|e| corrupt(offset, e))?))
-            })
-            .collect()
+        let mut claims = Vec::new();
+        for offset in from..size {
+            let slot = block_on(self.store.read(self.partition, offset)).map_err(other)?;
+            let Slot::Record(record) = slot else {
+                return Err(corrupt(offset, "the record was compacted"));
+            };
+            if record.header().payload_type == PAYLOAD_CLAIM {
+                claims.push(claim_of(&record).map_err(|e| corrupt(offset, e))?);
+            }
+        }
+        Ok(claims)
+    }
+
+    /// The claim with an ID, if the log holds it.
+    pub fn claim(&self, id: ClaimId) -> io::Result<Option<StoredClaim>> {
+        Ok(self.claims(0)?.into_iter().find(|stored| stored.claim.acceptance.claim == id))
+    }
+
+    /// Appends the record of an erasure to a partition, attested by the server.
+    fn append_erasure(&mut self, partition: u64, key: Option<String>, targets: Value, parts: Option<Vec<&str>>, reason: Reason<'_>, server_key: &SigningKey) -> io::Result<()> {
+        self.require_server_key(server_key)?;
+        if !REASON_CLASSES.contains(&reason.class) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("`{}` is not a reason for an erasure: use one of {}", reason.class, REASON_CLASSES.join(", ")),
+            ));
+        }
+        let mut pairs = vec![
+            (Value::text("targets"), targets),
+            (Value::text("reason"), Value::text(reason.class)),
+            (Value::text("authority"), Value::text(reason.authority)),
+        ];
+        if let Some(parts) = parts {
+            pairs.push((Value::text("parts"), Value::Array(parts.into_iter().map(Value::text).collect())));
+        }
+        let content = Value::map(pairs);
+        let comment = reason.comment.map_or(Value::Null, Value::text);
+        let attestation = instance_attestation(server_key, self.server.as_str(), &self.authority, None, false, &content, &comment)
+            .map_err(|_| invalid("an erase record does not encode"))?;
+        let draft = Draft {
+            appended_at: now().as_micros(),
+            payload_type: PAYLOAD_ERASE.into(),
+            key,
+            revid: None,
+            logid: None,
+            page_id: None,
+            body: Body::core(&content, &comment, &attestation).map_err(other)?,
+        };
+        block_on(self.store.append(partition, draft)).map_err(other)?;
+        Ok(())
+    }
+
+    fn checkpoint(&mut self, partition: u64, server_key: &SigningKey) -> io::Result<()> {
+        let origin = if partition == self.partition { self.origin.clone() } else { self.mutable_origin.clone() };
+        let checkpoint = block_on(scatter_integrity::checkpoints::checkpoint(&self.store, partition, &origin, server_key)).map_err(other)?;
+        block_on(self.checkpoints.put(partition, &checkpoint)).map_err(other)?;
+        Ok(())
+    }
+
+    /// Erases parts of a claim, for good. Returns the parts that were erased by this call:
+    /// those asked for that the record still had.
+    ///
+    /// The erasure is recorded first, as an erase record in the claim partition. The
+    /// claim's header and the server's acceptance are kept ([`ClaimPart`]).
+    pub fn erase_claim(&mut self, id: ClaimId, parts: &[ClaimPart], reason: Reason<'_>, server_key: &SigningKey) -> io::Result<Vec<ClaimPart>> {
+        let stored = self.claim(id)?.ok_or_else(|| io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("the log holds no claim {id}"),
+        ))?;
+        let already = stored.erased();
+        let mut parts: Vec<ClaimPart> = parts.iter().copied().filter(|part| !already.contains(part)).collect();
+        parts.sort();
+        parts.dedup();
+        if parts.is_empty() {
+            return Ok(parts);
+        }
+
+        let targets = Value::map(vec![(Value::text("offsets"), Value::Array(vec![Value::Int(i128::from(stored.offset))]))]);
+        self.append_erasure(self.partition, None, targets, Some(parts.iter().map(|part| part.name()).collect()), reason, server_key)?;
+        let indices: Vec<usize> = parts.iter().map(|part| part.index()).collect();
+        block_on(self.store.erase_parts(self.partition, stored.offset, &indices)).map_err(other)?;
+        self.checkpoint(self.partition, server_key)?;
+        Ok(parts)
+    }
+
+    /// Erases an actor from the mutable partition, for good: its actor record and every key
+    /// record under its surrogate. Returns the surrogate, which stays taken and now stands
+    /// for nobody, or `None` if the actor has no surrogate.
+    ///
+    /// The actor then has no keys, and the claims it made are not touched: their
+    /// attestations still name it until they are erased ([`ClaimLog::erase_claim`]).
+    pub fn erase_actor(&mut self, actor: &NamedNode, reason: Reason<'_>, server_key: &SigningKey) -> io::Result<Option<u64>> {
+        let Some(surrogate) = self.surrogate_of(actor)? else {
+            return Ok(None);
+        };
+        let key = ActorKey::surrogate(surrogate).to_string();
+        let offsets: Vec<u64> = records(&self.store, self.mutable)?.iter()
+            .filter(|record| record.header().key.as_deref() == Some(key.as_str()) && record.header().payload_type != PAYLOAD_ERASE)
+            .map(|record| record.header().offset)
+            .collect();
+
+        let targets = Value::map(vec![(Value::text("key"), Value::text(&key))]);
+        self.append_erasure(self.mutable, Some(key), targets, None, reason, server_key)?;
+        for offset in offsets {
+            block_on(self.store.erase_parts(self.mutable, offset, &[0, 1, 2])).map_err(other)?;
+        }
+        self.checkpoint(self.mutable, server_key)?;
+        Ok(Some(surrogate))
     }
 
     /// Verifies the whole log and returns the number of claims in it.
@@ -566,14 +769,25 @@ impl ClaimLog {
     /// `server_key` is the key the caller expects the server to have, and must be the
     /// current key of the server partition's chain. Every partition is then checked by
     /// [`scatter_integrity::verify`]: headers, body commitments, the Merkle tree, the signed
-    /// checkpoints, and in the server partition the founding record, the key chain and
-    /// every attestation. Every claim must also read back as the claim its key names at the
-    /// sequence ID of its offset, under a server key of the chain, and carry an actor's
-    /// signature and a server's signature that verify.
+    /// checkpoints, that every erased part is covered by an erase record, and in the server
+    /// partition the founding record, the key chain and every attestation.
+    ///
+    /// Every claim must also read back as the claim its key names at the sequence ID of its
+    /// offset, with an acceptance signed by a key of the server's. A claim with nothing
+    /// erased must carry an actor's signature that verifies, under a key that was
+    /// registered for the actor, unless an actor has been erased and with it the knowledge
+    /// of whose its keys were.
     pub fn verify(&self, server_key: &VerifyingKey) -> io::Result<u64> {
         if *server_key != self.server_key() {
             return Err(invalid("the server partition's current key is not the expected server key"));
         }
+        let part_names = |payload_type: &str| -> Vec<String> {
+            if payload_type == PAYLOAD_CLAIM {
+                CLAIM_PART_NAMES.iter().map(|name| name.to_string()).collect()
+            } else {
+                Vec::new()
+            }
+        };
         for (name, partition, origin, is_config) in [
             (GRAPH_SERVER, SERVER_PARTITION, &self.server_origin, true),
             (GRAPH_CLAIM, self.partition, &self.origin, false),
@@ -585,7 +799,7 @@ impl ClaimLog {
                 chain: &self.chain,
                 level: Level::Bodies,
                 actor_keys: None,
-                part_names: None,
+                part_names: Some(&part_names),
                 is_config,
                 withheld: None,
             }));
@@ -599,25 +813,34 @@ impl ClaimLog {
         }
 
         let key_records = self.all_key_records()?;
-        for (offset, stored) in self.claims(0)? {
+        let any_erased = self.surrogates()?.iter().any(|(_, actor)| actor.is_none());
+        let claims = self.claims(0)?;
+        for stored in &claims {
+            let offset = stored.offset;
             if self.chain.lookup(&scatter_log::registry::key_id(stored.server_key.as_bytes())).is_none() {
                 return Err(corrupt(offset, "accepted under a key that is not the server's"));
             }
+            stored.claim.acceptance.verify(&stored.server_key).map_err(|e| corrupt(offset, e))?;
+
+            let Some(signed) = stored.claim.whole().map_err(|e| corrupt(offset, e))? else { continue };
+            let actor_key = stored.actor_key.ok_or_else(|| corrupt(offset, "no key for the actor's signature"))?;
             // The key the actor's signature was checked against is one of the server's for
-            // the server, and for anyone else one the server registered for that actor
-            let attribution = stored.signed.envelope().claim().attribution();
+            // the server, and for anyone else one the server registered for that actor.
+            // Once any actor has been erased, its key records say no longer whose they
+            // were, so a key that is not found may have been one of those.
+            let attribution = signed.envelope().claim().attribution();
             let known = if *attribution == self.server {
-                self.chain.lookup(&scatter_log::registry::key_id(stored.actor_key.as_bytes())).is_some()
+                self.chain.lookup(&scatter_log::registry::key_id(actor_key.as_bytes())).is_some()
             } else {
-                key_records.iter().any(|(actor, record)| actor == attribution && record.public_key.0 == stored.actor_key.to_bytes())
+                any_erased
+                    || key_records.iter().any(|(actor, record)| actor == attribution && record.public_key.0 == actor_key.to_bytes())
             };
             if !known {
                 return Err(corrupt(offset, format!("signed with a key that was never registered for {attribution}")));
             }
-            stored.signed.envelope().verify(&stored.actor_key).map_err(|e| corrupt(offset, e))?;
-            stored.signed.verify(&stored.server_key).map_err(|e| corrupt(offset, e))?;
+            signed.envelope().verify(&actor_key).map_err(|e| corrupt(offset, e))?;
         }
-        self.size()
+        Ok(claims.len() as u64)
     }
 }
 
@@ -625,37 +848,37 @@ fn bytes(bytes: &[u8]) -> Value {
     Value::Bytes(bytes.to_vec())
 }
 
-fn signature_value(signature: Signature, key: &VerifyingKey, more: Vec<(Value, Value)>) -> Value {
-    let mut pairs = vec![
-        (Value::text("alg"), Value::text("ed25519")),
-        (Value::text("key"), bytes(key.as_bytes())),
-        (Value::text("sig"), bytes(signature.as_bytes())),
-    ];
-    pairs.extend(more);
-    Value::map(pairs)
-}
-
 /// The body of a claim record: the five parts of the module's table.
 fn body_of(signed: &SignedClaim, actor_key: &VerifyingKey, server_key: &VerifyingKey) -> io::Result<Body> {
     let envelope = signed.envelope();
     let claim = envelope.claim();
-    let parts = [
-        Value::map(vec![
-            (Value::text("previous"), bytes(claim.previous().as_bytes())),
-            (Value::text("triples"), Value::Array(claim.triples().iter().map(|t| Value::Text(ntriples_line(t))).collect())),
-        ]),
-        Value::text(claim.attribution().as_str()),
-        signature_value(envelope.signature(), actor_key, vec![]),
-        signature_value(signed.server_signature(), server_key, vec![
-            (Value::text("sequence"), Value::text(signed.sequence_id())),
-            (Value::text("timestamp"), Value::text(signed.timestamp())),
-        ]),
-        Value::Array(envelope.acknowledgments().iter()
-            .map(|(term, prior)| Value::Array(vec![Value::text(term.as_str()), bytes(prior.as_bytes())]))
-            .collect()),
-    ];
-    let parts = parts.iter().map(Part::of).collect::<Result<Vec<Part>, _>>().map_err(other)?;
-    Body::new(parts).map_err(other)
+    let content = Value::map(vec![
+        (Value::text("previous"), bytes(claim.previous().as_bytes())),
+        (Value::text("triples"), Value::Array(claim.triples().iter().map(|t| Value::Text(ntriples_line(t))).collect())),
+    ]);
+    let attestation = Value::map(vec![
+        (Value::text("actor"), Value::text(claim.attribution().as_str())),
+        (Value::text("alg"), Value::text("ed25519")),
+        (Value::text("key"), bytes(actor_key.as_bytes())),
+        (Value::text("sig"), bytes(envelope.signature().as_bytes())),
+    ]);
+    let acknowledgments = Value::Array(envelope.acknowledgments().iter()
+        .map(|(term, prior)| Value::Array(vec![Value::text(term.as_str()), bytes(prior.as_bytes())]))
+        .collect());
+    let acceptance = signed.acceptance();
+    let acceptance = Value::map(vec![
+        (Value::text("alg"), Value::text("ed25519")),
+        (Value::text("key"), bytes(server_key.as_bytes())),
+        (Value::text("sig"), bytes(acceptance.signature.as_bytes())),
+        (Value::text("client"), Value::text(&acceptance.client_signature)),
+        (Value::text("sequence"), Value::text(&acceptance.sequence_id)),
+        (Value::text("timestamp"), Value::text(&acceptance.timestamp)),
+    ]);
+
+    let mut body = Body::core(&content, &Value::Null, &attestation).map_err(other)?;
+    body.push(Part::of(&acknowledgments).map_err(other)?).map_err(other)?;
+    body.push(Part::of(&acceptance).map_err(other)?).map_err(other)?;
+    Ok(body)
 }
 
 fn array<const N: usize>(value: Option<&Value>, what: &str) -> Result<[u8; N], String> {
@@ -677,64 +900,96 @@ fn signature_of(value: &Value, what: &str) -> Result<(Signature, VerifyingKey), 
     Ok((Signature::from_bytes(array::<64>(value.get("sig"), what)?), key))
 }
 
-/// Reads a claim record back. Signatures are not checked.
+/// Reads a claim record back, less any part that was erased. Signatures are not checked.
 fn claim_of(record: &Record) -> Result<StoredClaim, String> {
     let header = record.header();
     if header.payload_type != PAYLOAD_CLAIM {
         return Err(format!("a {} record, not a claim", header.payload_type));
     }
-    let part = |index: usize, name: &str| -> Result<Value, String> {
+    let id: ClaimId = header.key.as_deref()
+        .and_then(|key| key.parse().ok())
+        .ok_or("the record's key is not a claim ID")?;
+    // A part's value, or `None` if the part was erased
+    let part = |index: usize, name: &str| -> Result<Option<Value>, String> {
         record.body().part(index)
             .ok_or_else(|| format!("no {name} part"))?
-            .value().map_err(|e| format!("the {name} part: {e}"))?
-            .ok_or_else(|| format!("the {name} part was erased"))
+            .value().map_err(|e| format!("the {name} part: {e}"))
     };
 
-    let content = part(0, "claim")?;
-    let previous = ClaimId::from_bytes(array::<32>(content.get("previous"), "the previous claim")?);
-    let Some(Value::Array(lines)) = content.get("triples") else {
-        return Err("the claim has no triples".into());
+    let claim = match part(ClaimPart::Content.index(), "content")? {
+        None => None,
+        Some(content) => {
+            let previous = ClaimId::from_bytes(array::<32>(content.get("previous"), "the previous claim")?);
+            let Some(Value::Array(lines)) = content.get("triples") else {
+                return Err("the claim has no triples".into());
+            };
+            let mut triples: Vec<Triple> = Vec::with_capacity(lines.len());
+            for line in lines {
+                let line = text(Some(line), "a triple")?;
+                let mut parsed = NTriplesParser::new().for_slice(line);
+                match (parsed.next(), parsed.next()) {
+                    (Some(Ok(triple)), None) => triples.push(triple),
+                    _ => return Err(format!("not one N-Triples line: {line}")),
+                }
+            }
+            Some((triples, previous))
+        },
     };
-    let mut triples: Vec<Triple> = Vec::with_capacity(lines.len());
-    for line in lines {
-        let line = text(Some(line), "a triple")?;
-        let mut parsed = NTriplesParser::new().for_slice(line);
-        match (parsed.next(), parsed.next()) {
-            (Some(Ok(triple)), None) => triples.push(triple),
-            _ => return Err(format!("not one N-Triples line: {line}")),
-        }
-    }
-    let attribution_value = part(1, "attribution")?;
-    let attribution = NamedNode::new(text(Some(&attribution_value), "the attribution")?)
-        .map_err(|e| format!("the attribution: {e}"))?;
-    let claim = Claim::new(triples, attribution, previous).map_err(|e| e.to_string())?;
-    if header.key.as_deref() != Some(claim.id().to_string().as_str()) {
-        return Err(format!("the record's key is not its claim's ID, {}", claim.id()));
-    }
 
-    let Value::Array(pairs) = part(4, "acknowledgments")? else {
-        return Err("the acknowledgments are not an array".into());
+    let (attestation, actor_key) = match part(ClaimPart::Attestation.index(), "attestation")? {
+        None => (None, None),
+        Some(attestation) => {
+            let actor = NamedNode::new(text(attestation.get("actor"), "the actor")?)
+                .map_err(|e| format!("the actor: {e}"))?;
+            let (signature, key) = signature_of(&attestation, "the actor's signature")?;
+            (Some((actor, signature)), Some(key))
+        },
     };
-    let mut acknowledgments = Acknowledgments::new();
-    for pair in &pairs {
-        let Value::Array(pair) = pair else { return Err("an acknowledgment is not a pair".into()) };
-        let term = NamedNode::new(text(pair.first(), "an acknowledged term")?)
-            .map_err(|e| format!("an acknowledged term: {e}"))?;
-        acknowledgments.insert(term, ClaimId::from_bytes(array::<32>(pair.get(1), "a prior claim")?));
-    }
 
-    let (signature, actor_key) = signature_of(&part(2, "client signature")?, "the client signature")?;
-    let envelope = Envelope::from_parts(claim, acknowledgments, signature).map_err(|e| e.to_string())?;
+    let acknowledgments = match part(PART_ACKNOWLEDGMENTS, "acknowledgments")? {
+        None => None,
+        Some(Value::Array(pairs)) => {
+            let mut acknowledgments = Acknowledgments::new();
+            for pair in &pairs {
+                let Value::Array(pair) = pair else { return Err("an acknowledgment is not a pair".into()) };
+                let term = NamedNode::new(text(pair.first(), "an acknowledged term")?)
+                    .map_err(|e| format!("an acknowledged term: {e}"))?;
+                acknowledgments.insert(term, ClaimId::from_bytes(array::<32>(pair.get(1), "a prior claim")?));
+            }
+            Some(acknowledgments)
+        },
+        Some(_) => return Err("the acknowledgments are not an array".into()),
+    };
 
-    let server = part(3, "server signature")?;
-    let (server_signature, server_key) = signature_of(&server, "the server signature")?;
-    let sequence_id = text(server.get("sequence"), "the sequence ID")?;
+    let acceptance = part(PART_ACCEPTANCE, "acceptance")?.ok_or("the acceptance was erased")?;
+    let (server_signature, server_key) = signature_of(&acceptance, "the server's signature")?;
+    let sequence_id = text(acceptance.get("sequence"), "the sequence ID")?;
     if sequence_id != header.offset.to_string() {
         return Err(format!("the claim has sequence ID {sequence_id}"));
     }
-    let signed = SignedClaim::from_parts(envelope, sequence_id, text(server.get("timestamp"), "the timestamp")?, server_signature)
-        .map_err(|e| e.to_string())?;
-    Ok(StoredClaim { signed, actor_key, server_key })
+    let acceptance = Acceptance {
+        claim: id,
+        client_signature: text(acceptance.get("client"), "the digest of the actor's signature")?.to_string(),
+        sequence_id: sequence_id.to_string(),
+        timestamp: text(acceptance.get("timestamp"), "the timestamp")?.to_string(),
+        signature: server_signature,
+    };
+
+    // What is there must be what the header and the acceptance name
+    if let Some((_, signature)) = &attestation {
+        if signature.digest() != acceptance.client_signature {
+            return Err("the actor's signature is not the one the server accepted".into());
+        }
+    }
+    if let (Some((triples, previous)), Some((actor, _))) = (&claim, &attestation) {
+        let made = Claim::new(triples.clone(), actor.clone(), *previous).map_err(|e| e.to_string())?.id();
+        if made != id {
+            return Err(format!("the record's key is not its claim's ID, {made}"));
+        }
+    }
+    let claim = Redacted { acceptance, claim, attestation, acknowledgments };
+    claim.whole().map_err(|e| e.to_string())?;
+    Ok(StoredClaim { offset: header.offset, claim, actor_key, server_key })
 }
 
 #[cfg(test)]
@@ -823,6 +1078,10 @@ mod tests {
         for record in records(&log.store, log.mutable).unwrap() {
             assert!(!String::from_utf8_lossy(&record.encode()).contains("example.org/alice"));
         }
+
+        // An erasure with no record of it does not pass verification
+        let error = log.verify(&server_key.verifying_key()).unwrap_err();
+        assert!(error.to_string().contains("Erasure"), "{error}");
 
         // Seen again, she gets a new surrogate, and the key registered now is hers
         let key = keys::generate().verifying_key();

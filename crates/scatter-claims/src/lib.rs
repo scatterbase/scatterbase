@@ -25,7 +25,8 @@ pub mod id;
 pub mod rdf;
 
 pub use claim::Claim;
-pub use envelope::{Acknowledgments, Envelope, Signature, SignedClaim};
+pub use envelope::{Acceptance, Acknowledgments, Envelope, Signature, SignedClaim};
+pub use rdf::Redacted;
 pub use id::{ClaimId, TermHash, TripleHash};
 
 /// Why a claim, an envelope or a signed claim was refused.

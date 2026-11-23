@@ -41,6 +41,7 @@ use scatter_vocab::{prov, scatter};
 
 use crate::claim::compare_triples;
 use crate::id::{ntriples_line, ClaimId, TermHash, TripleHash, CLAIM_NS, TRIPLE_NS};
+use crate::envelope::Acceptance;
 use crate::{Acknowledgments, Claim, ClaimError, Envelope, Signature, SignedClaim};
 
 /// The prefixes the Turtle form declares, in the order it declares them.
@@ -94,11 +95,28 @@ impl Envelope {
     /// and the signature.
     fn groups(&self) -> Vec<Vec<Triple>> {
         let claim = self.claim();
-        let id = claim.id();
-        let claim_iri = id.iri();
-        let mut about = Vec::new();
+        envelope_groups(
+            claim.id(),
+            Some((claim.triples(), claim.previous())),
+            Some((claim.attribution(), self.signature())),
+            Some(self.acknowledgments()),
+        )
+    }
+}
 
-        for triple in claim.triples() {
+/// The first three groups of triples of a claim, from the parts of it that are there: the
+/// claim's own triples, the triples about it in order, and the actor's signature.
+fn envelope_groups(
+    id: ClaimId,
+    claim: Option<(&[Triple], ClaimId)>,
+    attestation: Option<(&NamedNode, Signature)>,
+    acknowledgments: Option<&Acknowledgments>,
+) -> Vec<Vec<Triple>> {
+    let claim_iri = id.iri();
+    let mut about = Vec::new();
+
+    if let Some((triples, previous)) = claim {
+        for triple in triples {
             let hash_iri = TripleHash::of(triple).iri();
             about.push(Triple::new(hash_iri.clone(), scatter::CLAIMED_IN, claim_iri.clone()));
             about.push(Triple::new(hash_iri.clone(), rdf::TYPE, scatter::CLAIM_TRIPLE));
@@ -107,24 +125,121 @@ impl Envelope {
             about.push(Triple::new(hash_iri.clone(), rdf::PREDICATE, triple.predicate.clone()));
             about.push(Triple::new(hash_iri, rdf::OBJECT, triple.object.clone()));
         }
+        about.push(Triple::new(claim_iri.clone(), scatter::PREVIOUS_CLAIM, previous.iri()));
+    }
+    if let Some((attribution, _)) = attestation {
+        about.push(Triple::new(claim_iri.clone(), prov::WAS_ATTRIBUTED_TO, attribution.clone()));
+    }
+    for (term, prior) in acknowledgments.into_iter().flatten() {
+        let ack_iri = TermHash::of(term.as_ref()).ack_iri(&id);
+        about.push(Triple::new(ack_iri.clone(), scatter::TERM, term.clone()));
+        about.push(Triple::new(ack_iri.clone(), scatter::PRIOR_CLAIM, prior.iri()));
+        about.push(Triple::new(claim_iri.clone(), scatter::ACKNOWLEDGES_PRIOR_USE, ack_iri));
+    }
+    about.sort_by(compare_triples);
 
-        about.push(Triple::new(claim_iri.clone(), prov::WAS_ATTRIBUTED_TO, claim.attribution().clone()));
-        about.push(Triple::new(claim_iri.clone(), scatter::PREVIOUS_CLAIM, claim.previous().iri()));
-
-        for (term, prior) in self.acknowledgments() {
-            let ack_iri = TermHash::of(term.as_ref()).ack_iri(&id);
-            about.push(Triple::new(ack_iri.clone(), scatter::TERM, term.clone()));
-            about.push(Triple::new(ack_iri.clone(), scatter::PRIOR_CLAIM, prior.iri()));
-            about.push(Triple::new(claim_iri.clone(), scatter::ACKNOWLEDGES_PRIOR_USE, ack_iri));
-        }
-        about.sort_by(compare_triples);
-
-        let signature = Triple::new(
-            claim_iri,
+    let signature = attestation.into_iter()
+        .map(|(_, signature)| Triple::new(
+            claim_iri.clone(),
             scatter::USER_SIGNATURE,
-            Literal::new_simple_literal(self.signature().to_string()),
+            Literal::new_simple_literal(signature.to_string()),
+        ))
+        .collect();
+    vec![claim.map_or_else(Vec::new, |(triples, _)| triples.to_vec()), about, signature]
+}
+
+/// The last two groups of triples of an accepted claim: what the server assigned, and its
+/// signature.
+fn acceptance_groups(acceptance: &Acceptance) -> Vec<Vec<Triple>> {
+    let claim_iri = acceptance.claim.iri();
+    vec![
+        vec![
+            Triple::new(claim_iri.clone(), rdf::TYPE, scatter::SIGNED_CLAIM),
+            Triple::new(
+                claim_iri.clone(),
+                prov::GENERATED_AT_TIME,
+                Literal::new_typed_literal(acceptance.timestamp.as_str(), xsd::DATE_TIME),
+            ),
+            Triple::new(claim_iri.clone(), scatter::SEQ_ID, Literal::new_simple_literal(acceptance.sequence_id.as_str())),
+        ],
+        vec![Triple::new(
+            claim_iri,
+            scatter::SERVER_SIGNATURE,
+            Literal::new_simple_literal(acceptance.signature.to_string()),
+        )],
+    ]
+}
+
+fn quads_of<'a>(groups: Vec<Vec<Triple>>, content: GraphNameRef<'a>, about: GraphNameRef<'a>) -> Vec<Quad> {
+    groups.into_iter().enumerate()
+        .flat_map(|(group, triples)| {
+            let graph = if group == 0 { content } else { about };
+            triples.into_iter().map(move |triple| triple.in_graph(graph))
+        })
+        .collect()
+}
+
+/// An accepted claim of which any erasable part may be gone: what a log holds once parts of
+/// a claim's record have been erased. The server's acceptance is always there.
+///
+/// Its RDF form is the form of the signed claim without the triples the missing parts
+/// would give: with no claim, no triples and no reification of them and no previous claim;
+/// with no attestation, no attribution and no actor's signature; with no acknowledgments,
+/// none. A claim with nothing missing is written exactly as [`SignedClaim::to_quads`]
+/// writes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Redacted {
+    /// The server's acceptance, which names the claim.
+    pub acceptance: Acceptance,
+    /// The claim's triples, in order, and the claim before it in the actor's chain.
+    pub claim: Option<(Vec<Triple>, ClaimId)>,
+    /// The actor and the actor's signature.
+    pub attestation: Option<(NamedNode, Signature)>,
+    /// The prior-use acknowledgments.
+    pub acknowledgments: Option<Acknowledgments>,
+}
+
+impl Redacted {
+    /// A signed claim with nothing missing.
+    pub fn of(signed: &SignedClaim) -> Self {
+        let envelope = signed.envelope();
+        let claim = envelope.claim();
+        Self {
+            acceptance: signed.acceptance(),
+            claim: Some((claim.triples().to_vec(), claim.previous())),
+            attestation: Some((claim.attribution().clone(), envelope.signature())),
+            acknowledgments: Some(envelope.acknowledgments().clone()),
+        }
+    }
+
+    /// The signed claim, if nothing is missing. Its ID must be the one the acceptance names.
+    pub fn whole(&self) -> Result<Option<SignedClaim>, ClaimError> {
+        let (Some((triples, previous)), Some((attribution, signature)), Some(acknowledgments)) =
+            (&self.claim, &self.attestation, &self.acknowledgments)
+        else {
+            return Ok(None);
+        };
+        let claim = Claim::new(triples.clone(), attribution.clone(), *previous)?;
+        if claim.id() != self.acceptance.claim {
+            return Err(ClaimError::Malformed(format!(
+                "the parts make the claim {}, not {}", claim.id(), self.acceptance.claim,
+            )));
+        }
+        let envelope = Envelope::from_parts(claim, acknowledgments.clone(), *signature)?;
+        SignedClaim::from_parts(envelope, self.acceptance.sequence_id.as_str(), self.acceptance.timestamp.as_str(), self.acceptance.signature).map(Some)
+    }
+
+    /// What is there as quads in two graphs: the claim's own triples in `content`, and every
+    /// triple about the claim in `about`.
+    pub fn to_quads<'a>(&self, content: impl Into<GraphNameRef<'a>>, about: impl Into<GraphNameRef<'a>>) -> Vec<Quad> {
+        let mut groups = envelope_groups(
+            self.acceptance.claim,
+            self.claim.as_ref().map(|(triples, previous)| (triples.as_slice(), *previous)),
+            self.attestation.as_ref().map(|(attribution, signature)| (attribution, *signature)),
+            self.acknowledgments.as_ref(),
         );
-        vec![claim.triples().to_vec(), about, vec![signature]]
+        groups.extend(acceptance_groups(&self.acceptance));
+        quads_of(groups, content.into(), about.into())
     }
 }
 
@@ -137,13 +252,7 @@ impl SignedClaim {
     /// if nothing but accepted claims is written to `about`, no claim's content can pass
     /// for what a server recorded about a claim.
     pub fn to_quads<'a>(&self, content: impl Into<GraphNameRef<'a>>, about: impl Into<GraphNameRef<'a>>) -> Vec<Quad> {
-        let (content, about) = (content.into(), about.into());
-        self.groups().into_iter().enumerate()
-            .flat_map(|(group, triples)| {
-                let graph = if group == 0 { content } else { about };
-                triples.into_iter().map(move |triple| triple.in_graph(graph))
-            })
-            .collect()
+        quads_of(self.groups(), content.into(), about.into())
     }
 
     /// The signed claim as triples: the envelope's, then the server's.
@@ -177,22 +286,8 @@ impl SignedClaim {
     }
 
     fn groups(&self) -> Vec<Vec<Triple>> {
-        let claim_iri = self.id().iri();
         let mut groups = self.envelope().groups();
-        groups.push(vec![
-            Triple::new(claim_iri.clone(), rdf::TYPE, scatter::SIGNED_CLAIM),
-            Triple::new(
-                claim_iri.clone(),
-                prov::GENERATED_AT_TIME,
-                Literal::new_typed_literal(self.timestamp(), xsd::DATE_TIME),
-            ),
-            Triple::new(claim_iri.clone(), scatter::SEQ_ID, Literal::new_simple_literal(self.sequence_id())),
-        ]);
-        groups.push(vec![Triple::new(
-            claim_iri,
-            scatter::SERVER_SIGNATURE,
-            Literal::new_simple_literal(self.server_signature().to_string()),
-        )]);
+        groups.extend(acceptance_groups(&self.acceptance()));
         groups
     }
 }
@@ -407,6 +502,42 @@ mod tests {
         assert_eq!(in_graph(&content), signed.envelope().claim().triples());
         // The graph about the claim is enough to read it back
         assert_eq!(SignedClaim::from_triples(&in_graph(&about)).unwrap(), signed);
+    }
+
+    #[test]
+    fn a_redacted_claim_is_written_without_what_is_missing() {
+        let signed = signed();
+        let id = signed.id();
+        let content = iri("http://example.org/graph/claim");
+        let about = iri("http://example.org/graph/meta");
+        let whole = Redacted::of(&signed);
+        assert_eq!(whole.to_quads(&content, &about), signed.to_quads(&content, &about));
+        assert_eq!(whole.whole().unwrap(), Some(signed.clone()));
+
+        let has = |redacted: &Redacted, predicate: NamedNodeRef<'_>| {
+            redacted.to_quads(&content, &about).iter().any(|q| q.predicate.as_ref() == predicate)
+        };
+        // Without the claim: who claimed and when, but not what
+        let no_claim = Redacted { claim: None, ..whole.clone() };
+        assert_eq!(no_claim.whole().unwrap(), None);
+        assert!(!has(&no_claim, rdf::SUBJECT) && !has(&no_claim, scatter::PREVIOUS_CLAIM));
+        assert!(no_claim.to_quads(&content, &about).iter().all(|q| q.graph_name == about.clone().into()));
+        assert!(has(&no_claim, prov::WAS_ATTRIBUTED_TO) && has(&no_claim, scatter::TERM));
+        // Without the attestation: what was claimed, but not by whom
+        let no_actor = Redacted { attestation: None, ..whole.clone() };
+        assert!(!has(&no_actor, prov::WAS_ATTRIBUTED_TO) && !has(&no_actor, scatter::USER_SIGNATURE));
+        assert!(has(&no_actor, rdf::SUBJECT));
+        // With nothing but the acceptance: that a claim was accepted, and where in the log
+        let bare = Redacted { claim: None, attestation: None, acknowledgments: None, ..whole.clone() };
+        let quads = bare.to_quads(&content, &about);
+        assert_eq!(quads.len(), 4);
+        assert!(quads.iter().all(|q| q.subject == id.iri().into()));
+        assert_eq!(bare.acceptance.verify(&key(9).verifying_key()), Ok(()));
+
+        // Parts that do not make the claim the acceptance names are refused
+        let mut wrong = whole.clone();
+        wrong.attestation = Some((iri("http://example.org/mallory"), signed.envelope().signature()));
+        assert!(wrong.whole().is_err());
     }
 
     #[test]

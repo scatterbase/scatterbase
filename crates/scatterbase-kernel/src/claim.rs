@@ -21,10 +21,10 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use scatter_actors::time::Timestamp;
 use oxrdf::{NamedNode, NamedOrBlankNode, Term, Triple};
 use oxttl::{NTriplesParser, TurtleParser};
-use scatter_claims::{Acknowledgments, Claim, ClaimError, Envelope, SignedClaim};
+use scatter_claims::{Acknowledgments, Claim, ClaimError, ClaimId, Envelope, SignedClaim};
 
 use crate::instance::Instance;
-use crate::log::ClaimLog;
+use crate::log::{ClaimLog, ClaimPart, Reason};
 use crate::lookup::Snapshot;
 use crate::prefix::expand_prefix;
 use crate::projection;
@@ -185,6 +185,40 @@ pub fn submit(envelope: Envelope, instance: &Instance, server_key: &SigningKey) 
     Ok(signed)
 }
 
+/// Erases parts of an accepted claim, for good, and writes the store again without them.
+/// Returns the parts this call erased ([`ClaimLog::erase_claim`]).
+pub fn erase_claim(
+    instance: &Instance,
+    id: ClaimId,
+    parts: &[ClaimPart],
+    reason: Reason<'_>,
+    server_key: &SigningKey,
+) -> io::Result<Vec<ClaimPart>> {
+    let mut log = ClaimLog::open(instance)?;
+    let erased = log.erase_claim(id, parts, reason, server_key)?;
+    if !erased.is_empty() {
+        // What the erased parts put in the store may be shared with other claims, so the
+        // store is written again from what the log still holds
+        projection::rebuild(instance, &log)?;
+    }
+    Ok(erased)
+}
+
+/// Erases an actor from the log's mutable partition, for good, and takes its keys out of
+/// the store. Returns the actor's surrogate, or `None` if it had none
+/// ([`ClaimLog::erase_actor`]).
+pub fn erase_actor(
+    instance: &Instance,
+    actor: &NamedNode,
+    reason: Reason<'_>,
+    server_key: &SigningKey,
+) -> io::Result<Option<u64>> {
+    let mut log = ClaimLog::open(instance)?;
+    let surrogate = log.erase_actor(actor, reason, server_key)?;
+    projection::catch_up(instance, &log)?;
+    Ok(surrogate)
+}
+
 /// Checks that an envelope was prepared against the store as it is now: that its claim
 /// follows the actor's latest claim, and that it acknowledges, for each term, the claim
 /// that last used the term.
@@ -215,7 +249,6 @@ pub fn check_current(envelope: &Envelope, store: &Snapshot) -> Result<(), String
 mod tests {
     use super::*;
     use oxrdf::Literal;
-    use scatter_claims::ClaimId;
     use std::io::Cursor;
 
     use crate::instance::{GRAPH_CLAIM, GRAPH_META, GRAPH_MUTABLE, GRAPH_SERVER};
@@ -535,13 +568,131 @@ mod tests {
         assert_eq!(log.size().unwrap(), 2);
         assert_eq!(log.origin(), "example.org/log/claim");
         let claims = log.claims(0).unwrap();
-        assert_eq!(claims[1].0, 1);
-        assert_eq!(claims[1].1.signed, signed);
-        assert_eq!(claims[1].1.actor_key, alice_key.verifying_key());
-        assert_eq!(claims[1].1.server_key, fixture.server_key.verifying_key());
+        assert_eq!(claims[1].offset, 1);
+        assert_eq!(claims[1].signed(), Some(signed));
+        assert_eq!(claims[1].actor_key, Some(alice_key.verifying_key()));
+        assert_eq!(claims[1].server_key, fixture.server_key.verifying_key());
 
         assert_eq!(log.verify(&fixture.server_key.verifying_key()).unwrap(), 2);
         assert!(log.verify(&keys::generate().verifying_key()).is_err());
+    }
+
+    const PRIVACY: Reason<'static> = Reason { class: "privacy", authority: "ticket:1", comment: Some("on request") };
+
+    #[test]
+    fn an_erased_claim_keeps_its_place_and_loses_the_parts_erased() {
+        let fixture = Fixture::new();
+        let alice = iri("http://example.org/alice");
+        let alice_key = fixture.register(&alice);
+        let first = fixture.claim(vec![name("http://example.org/a", "A")], &alice, &alice_key).unwrap();
+        let graph = |name: &str| fixture.store().triples_in(&fixture.instance.graph(name));
+        let about = |claim: &SignedClaim, predicate: oxrdf::NamedNodeRef<'_>| {
+            fixture.store().meta().iter().any(|t| t.subject == claim.id().iri().into() && t.predicate.as_ref() == predicate)
+        };
+
+        // What was claimed goes; who claimed it, and when, stays
+        let erased = erase_claim(&fixture.instance, first.id(), &[ClaimPart::Content], PRIVACY, &fixture.server_key).unwrap();
+        assert_eq!(erased, [ClaimPart::Content]);
+        assert!(graph(GRAPH_CLAIM).is_empty());
+        assert!(!fixture.store().meta().iter().any(|t| t.predicate.as_ref() == oxrdf::vocab::rdf::SUBJECT));
+        assert!(about(&first, scatter_vocab::prov::WAS_ATTRIBUTED_TO) && about(&first, scatter_vocab::scatter::SEQ_ID));
+        assert!(!about(&first, scatter_vocab::scatter::PREVIOUS_CLAIM));
+
+        // The claim is still the actor's latest, so her chain goes on from it
+        let second = fixture.claim(vec![name("http://example.org/b", "B")], &alice, &alice_key).unwrap();
+        assert_eq!(second.envelope().claim().previous(), first.id());
+        assert_eq!(second.sequence_id(), "2", "the erase record took offset 1");
+
+        // Erasing it again erases nothing; the rest goes on request
+        assert!(erase_claim(&fixture.instance, first.id(), &[ClaimPart::Content], PRIVACY, &fixture.server_key).unwrap().is_empty());
+        let erased = erase_claim(&fixture.instance, first.id(), &ClaimPart::ALL, PRIVACY, &fixture.server_key).unwrap();
+        assert_eq!(erased, [ClaimPart::Attestation, ClaimPart::Acknowledgments]);
+
+        // What is left: that a claim was accepted, its ID, its place and the server's signature
+        let stored = fixture.log().claim(first.id()).unwrap().unwrap();
+        assert_eq!(stored.erased(), ClaimPart::ALL);
+        assert_eq!((stored.offset, stored.signed()), (0, None));
+        assert_eq!(stored.claim.acceptance, first.acceptance());
+        assert_eq!(stored.claim.acceptance.verify(&fixture.server_key.verifying_key()), Ok(()));
+        let left: Vec<Triple> = fixture.store().meta().into_iter().filter(|t| t.subject == first.id().iri().into()).collect();
+        assert_eq!(left.len(), 4);
+        assert!(fixture.store().contains_claim(first.id()));
+        assert_eq!(fixture.store().latest_claim_by(alice.as_ref()), second.id());
+
+        // The log verifies, every erasure accounted for, and counts both claims
+        assert_eq!(fixture.log().verify(&fixture.server_key.verifying_key()).unwrap(), 2);
+        // The erased claim cannot be brought back by submitting it again
+        let error = submit(first.envelope().clone(), &fixture.instance, &fixture.server_key).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    }
+
+    #[test]
+    fn a_claim_with_its_attestation_erased_is_nobodys() {
+        let fixture = Fixture::new();
+        let alice = iri("http://example.org/alice");
+        let alice_key = fixture.register(&alice);
+        let by_server = fixture.claim(vec![name("http://example.org/s", "S")], &fixture.server, &fixture.server_key).unwrap();
+        let by_alice = fixture.claim(vec![name("http://example.org/a", "A")], &alice, &alice_key).unwrap();
+
+        for claim in [&by_server, &by_alice] {
+            erase_claim(&fixture.instance, claim.id(), &[ClaimPart::Attestation], PRIVACY, &fixture.server_key).unwrap();
+        }
+        let store = fixture.store();
+        // What was claimed is still there, the server's now in the claim graph with the rest
+        assert!(store.triples_in(&fixture.instance.graph(GRAPH_SERVER)).is_empty());
+        assert_eq!(store.triples_in(&fixture.instance.graph(GRAPH_CLAIM)).len(), 2);
+        assert_eq!(store.latest_claim_using(iri("http://example.org/a").as_ref()), by_alice.id());
+        // Nobody is said to have claimed it, and no signature or key of theirs is kept
+        assert!(!store.meta().iter().any(|t| t.predicate.as_ref() == scatter_vocab::prov::WAS_ATTRIBUTED_TO));
+        assert!(!store.meta().iter().any(|t| t.predicate.as_ref() == scatter_vocab::scatter::USER_SIGNATURE));
+        assert_eq!(store.latest_claim_by(alice.as_ref()), ClaimId::NONE);
+        assert_eq!(fixture.log().claim(by_alice.id()).unwrap().unwrap().actor_key, None);
+        assert_eq!(fixture.log().verify(&fixture.server_key.verifying_key()).unwrap(), 2);
+    }
+
+    #[test]
+    fn an_erasure_needs_a_claim_a_reason_and_the_servers_key() {
+        let fixture = Fixture::new();
+        let claim = fixture.claim(vec![name("http://example.org/s", "S")], &fixture.server, &fixture.server_key).unwrap();
+
+        let error = erase_claim(&fixture.instance, ClaimId::from_bytes([7; 32]), &ClaimPart::ALL, PRIVACY, &fixture.server_key).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        let whim = Reason { class: "whim", ..PRIVACY };
+        let error = erase_claim(&fixture.instance, claim.id(), &ClaimPart::ALL, whim, &fixture.server_key).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        let error = erase_claim(&fixture.instance, claim.id(), &ClaimPart::ALL, PRIVACY, &keys::generate()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+
+        // Nothing was erased by any of them
+        assert_eq!(fixture.log().claim(claim.id()).unwrap().unwrap().signed(), Some(claim));
+        assert_eq!(fixture.log().size().unwrap(), 1);
+        assert_eq!(ClaimPart::named("attestation"), Some(ClaimPart::Attestation));
+        assert_eq!(ClaimPart::named("acceptance"), None);
+    }
+
+    #[test]
+    fn an_erased_actor_has_no_keys_and_its_claims_remain() {
+        let fixture = Fixture::new();
+        let alice = iri("http://example.org/alice");
+        let alice_key = fixture.register(&alice);
+        let claim = fixture.claim(vec![name("http://example.org/a", "A")], &alice, &alice_key).unwrap();
+
+        assert_eq!(erase_actor(&fixture.instance, &alice, PRIVACY, &fixture.server_key).unwrap(), Some(1));
+        assert_eq!(erase_actor(&fixture.instance, &alice, PRIVACY, &fixture.server_key).unwrap(), None);
+
+        // The surrogate stands for nobody, and the keys are gone from the log and the store
+        assert_eq!(fixture.log().surrogates().unwrap(), [(1, None)]);
+        assert!(fixture.log().current_keys(&alice).unwrap().is_empty());
+        assert!(fixture.store().triples_in(&fixture.instance.graph(GRAPH_MUTABLE)).is_empty());
+        let error = fixture.claim(vec![name("http://example.org/b", "B")], &alice, &alice_key).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+
+        // Her claim is untouched and the log verifies; a key registered now is under a new number
+        assert_eq!(fixture.log().claim(claim.id()).unwrap().unwrap().signed(), Some(claim));
+        assert_eq!(fixture.log().verify(&fixture.server_key.verifying_key()).unwrap(), 1);
+        fixture.register(&alice);
+        assert_eq!(fixture.log().surrogate_of(&alice).unwrap(), Some(2));
+        assert_eq!(fixture.log().verify(&fixture.server_key.verifying_key()).unwrap(), 1);
     }
 
     #[test]

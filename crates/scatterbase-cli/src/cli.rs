@@ -89,6 +89,7 @@ pub fn print_help() {
         ("triple", "Triple management commands"),
         ("claim", "Claim management commands"),
         ("key", "Key management commands"),
+        ("actor", "Erase an actor from the log"),
         ("log", "Verify the log or rebuild the storage file from it"),
         ("prefix", "Prefix management commands"),
         ("purge", "Purge data commands"),
@@ -139,11 +140,11 @@ pub fn print_domain_help() {
     ];
 
     let commands = vec![
-        ("init", "Initialize a domain with a default triple"),
+        ("init", "Claim, as the server, that a domain is a dataset"),
     ];
 
     let examples = vec![
-        "scatterbase domain init",
+        "scatterbase domain init https://example.org",
         "scatterbase domain init --env custom.env"
     ];
 
@@ -164,13 +165,13 @@ pub fn print_triple_help() {
     ];
 
     let commands = vec![
-        ("write", "Write a triple to the store"),
+        ("write", "Claim one triple, as the actor named by --attribution"),
     ];
 
     let examples = vec![
-        "scatterbase triple write <subject> <property> <object>",
-        "scatterbase triple write https://example.org http://schema.org/name \"Example\"",
-        "scatterbase triple write --env custom.env <subject> <property> <object>"
+        "scatterbase triple write <subject> <property> <object> --attribution <uri>",
+        "scatterbase triple write https://example.org http://schema.org/name \"Example\" --attribution https://example.org/alice",
+        "scatterbase triple write <subject> <property> <object> --attribution <uri> --env custom.env"
     ];
 
     print_help_info(
@@ -187,22 +188,28 @@ pub fn print_triple_help() {
 pub fn print_claim_help() {
     let description = vec![
         "Manages claims in Scatterbase.",
-        "Claims are signed statements about triples."
+        "Claims are signed statements about triples. Every claim names who makes it with",
+        "--attribution: an actor with a registered key, or the server's own URI.",
+        "Erasing removes what was claimed (content), who claimed it (attestation) or what it",
+        "acknowledged (acknowledgments). The claim keeps its ID, its place in the log and the",
+        "server's signature. --reason is one of: legal, privacy, upstream, operational."
     ];
 
     let commands = vec![
         ("prepare", "Prepare a claim envelope from triples"),
         ("submit", "Submit a prepared claim envelope to data storage"),
         ("write", "Prepare and submit a claim in one step"),
+        ("erase", "Erase parts of an accepted claim, for good"),
     ];
 
     let examples = vec![
-        "scatterbase claim prepare --file triples.nt > claim_envelope.ttl",
         "scatterbase claim prepare --attribution https://example.org/alice --file triples.nt > claim_envelope.ttl",
-        "cat triples.nt | scatterbase claim prepare > claim_envelope.ttl",
+        "scatterbase claim prepare --attribution https://example.org/alice --file triples.nt > claim_envelope.ttl",
+        "cat triples.nt | scatterbase claim prepare --attribution https://example.org/alice > claim_envelope.ttl",
         "scatterbase claim submit --file claim_envelope.ttl",
         "cat claim_envelope.ttl | scatterbase claim submit",
-        "scatterbase claim write --file triples.nt",
+        "scatterbase claim erase <claim> --parts content --reason privacy --authority ticket:4411",
+        "scatterbase claim erase <claim> --parts content,attestation,acknowledgments --reason legal --authority notice:7 --comment \"court order\"",
         "scatterbase claim write --attribution https://example.org/alice --file triples.ttl",
         "scatterbase claim prepare --attribution https://example.org/bob --private-key bob_key.private --file triples.nt"
     ];

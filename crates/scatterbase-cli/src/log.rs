@@ -45,8 +45,7 @@ pub fn print_log_help() {
         Some(vec![
             "The log holds the server's key and graph registry in its server partition and every",
             "accepted claim in its claim partition. The storage file is derived from the claims.",
-            "Triples written with 'triple write' or 'domain init' are not claims, so they are not",
-            "in the log and a rebuild does not bring them back."
+            "Parts of claims that were erased are gone from the log, and a rebuild leaves them out."
         ]),
         Some(vec![
             "scatterbase log verify",

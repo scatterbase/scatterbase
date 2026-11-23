@@ -982,6 +982,7 @@ dependencies = [
  "scatter-quadstore",
  "scatter-vocab",
  "scatterbase-kernel",
+ "tempfile",
 ]
 
 [[package]]
