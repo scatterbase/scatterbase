@@ -56,8 +56,8 @@ pub fn parse_turtle<R: BufRead>(reader: R, prefixes: &HashMap<String, String>) -
     expand_parsed(TurtleParser::new().for_reader(reader), prefixes)
 }
 
-/// Collects parsed triples, expanding a prefix from the prefix file where an IRI in subject
-/// or object position is written with one, as in `<schema:name>`.
+/// Collects parsed triples, expanding a prefix from the prefix file wherever an IRI is
+/// written with one, as in `<schema:name>`.
 ///
 /// Blank nodes and quoted triples are left as the parser gives them:
 /// [`Claim::from_parsed`] replaces them when the triples are claimed.
@@ -88,7 +88,7 @@ fn expand_triple(triple: Triple, prefixes: &HashMap<String, String>) -> Result<T
         Term::Triple(quoted) => Term::Triple(Box::new(expand_triple(*quoted, prefixes)?)),
         other => other,
     };
-    Ok(Triple::new(subject, triple.predicate, object))
+    Ok(Triple::new(subject, expand(triple.predicate)?, object))
 }
 
 /// Prepares a claim of parsed triples by `attribution`, signed with that actor's key.
@@ -338,6 +338,8 @@ mod tests {
             &prefixes,
         ).unwrap();
         assert_eq!(triples[0].object, Term::from(iri("http://schema.org/Person")));
+        let prefixed = parse_ntriples(Cursor::new("<schema:a> <schema:name> <schema:b> .\n"), &prefixes).unwrap();
+        assert_eq!(prefixed[0].to_string(), "<http://schema.org/a> <http://schema.org/name> <http://schema.org/b>");
         assert!(triples[1].subject.is_blank_node());
 
         assert!(parse_ntriples(Cursor::new("not n-triples\n"), &prefixes).is_err());
