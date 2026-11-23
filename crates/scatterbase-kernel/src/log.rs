@@ -27,14 +27,25 @@
 //!
 //! # The mutable partition
 //!
-//! The mutable partition holds what can be taken back, which for now is the keys actors
-//! sign with. A key is registered by a `scatter:v0/key` record whose header key is the
-//! actor's IRI and whose content is a [`scatter_actors::signing::KeyRecord`]: the key ID,
-//! the algorithm, the public key and the time it is valid from. A later record for the same
-//! key ID with `revoked` set revokes it. Each record is attested by the server under the
-//! founding record's authority, so only the server registers or revokes a key. An actor
-//! may have several keys at once, and a claim's signature is accepted if any of them that
-//! is valid at the time verifies it.
+//! The mutable partition holds what can be taken back: who the actors are and the keys
+//! they sign with. Its records are attested by the server under the founding record's
+//! authority, so only the server writes them.
+//!
+//! **Actors.** A record header is never erased, so it must not say who an actor is. An
+//! actor is therefore known in this partition by a **surrogate**, a number the server
+//! mints in sequence the first time the actor is given a record, and written `actor:{n}`.
+//! The one place that says which actor a surrogate stands for is its `scatter:v0/actor`
+//! record, keyed `actor:{n}`, whose content is a [`scatter_actors::ActorRecord`] of kind
+//! `federated` with the actor's IRI as its raw value. Erase that record's content and only
+//! the number is left: the actor's key records can no longer be tied to an IRI, and the
+//! IRI seen again gets a new surrogate.
+//!
+//! **Keys.** A key is registered by a `scatter:v0/key` record whose header key is the
+//! actor's surrogate and whose content is a [`scatter_actors::signing::KeyRecord`]: the
+//! key ID, the algorithm, the public key and the time it is valid from. A later record for
+//! the same key ID with `revoked` set revokes it. An actor may have several keys at once,
+//! and a claim's signature is accepted if any of them that is valid at the time verifies
+//! it.
 //!
 //! # The claim record
 //!
@@ -60,6 +71,7 @@ use pollster::block_on;
 use scatter_claims::id::ntriples_line;
 use scatter_claims::{Acknowledgments, Claim, ClaimId, Envelope, Signature, SignedClaim};
 use scatter_actors::signing::{current_keys, KeyRecord, PublicKey};
+use scatter_actors::{ActorKey, ActorKind, ActorRecord, ActorSurrogates};
 use scatter_actors::time::Timestamp;
 use scatter_integrity::attest::{founding_attestation, instance_attestation, Authority};
 use scatter_integrity::checkpoint::{host_of, tenant_origin};
@@ -80,6 +92,8 @@ use crate::instance::{Instance, GRAPH_CLAIM, GRAPH_MUTABLE, GRAPH_SERVER};
 pub const GRAPHS_TOML: &str = include_str!("graphs.toml");
 /// The payload type of a claim record.
 pub const PAYLOAD_CLAIM: &str = "scatter:v0/claim";
+/// The payload type of an actor record, which says which actor a surrogate stands for.
+pub const PAYLOAD_ACTOR: &str = "scatter:v0/actor";
 /// The payload type of an actor's key record.
 pub const PAYLOAD_KEY: &str = "scatter:v0/key";
 /// The server partition, which founds the instance and registers its graphs.
@@ -128,6 +142,50 @@ fn corrupt(offset: u64, what: impl std::fmt::Display) -> io::Error {
 
 fn invalid(what: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, format!("log: {what}"))
+}
+
+/// The surrogate a header key `actor:{n}` names.
+fn surrogate_of_key(key: &str) -> Option<u64> {
+    let key = ActorKey::parse(key).ok()?;
+    if key.is_surrogate() { key.numeric_subject() } else { None }
+}
+
+/// The surrogates of a log as [`scatter_actors`] asks for them: a value is looked up, and
+/// minted with the server's key if it has none. The only kind is `federated`, an actor
+/// known by its IRI.
+pub struct Surrogates<'a> {
+    /// The log whose mutable partition holds the actor records.
+    pub log: &'a mut ClaimLog,
+    /// The server's key, which attests a newly minted surrogate's record.
+    pub server_key: &'a SigningKey,
+}
+
+impl Surrogates<'_> {
+    fn actor(kind: ActorKind, raw: &str) -> io::Result<NamedNode> {
+        if kind != ActorKind::Federated {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{} actors have no surrogates here", kind.name())));
+        }
+        NamedNode::new(raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))
+    }
+}
+
+impl ActorSurrogates for Surrogates<'_> {
+    type Error = io::Error;
+
+    fn surrogate(&mut self, kind: ActorKind, raw: &str) -> io::Result<u64> {
+        self.log.mint_surrogate(&Self::actor(kind, raw)?, self.server_key)
+    }
+
+    fn lookup(&self, kind: ActorKind, raw: &str) -> io::Result<Option<u64>> {
+        self.log.surrogate_of(&Self::actor(kind, raw)?)
+    }
+
+    fn raw(&self, surrogate: u64) -> io::Result<Option<(ActorKind, String)>> {
+        Ok(self.log.surrogates()?.into_iter()
+            .find(|(n, _)| *n == surrogate)
+            .and_then(|(_, actor)| actor)
+            .map(|actor| (ActorKind::Federated, actor.into_string())))
+    }
 }
 
 fn now() -> Timestamp {
@@ -315,21 +373,21 @@ impl ClaimLog {
         Ok(())
     }
 
-    /// Appends a key record for an actor, attested by the server, and signs a checkpoint.
-    fn append_key_record(&mut self, actor: &NamedNode, record: &KeyRecord, at: Timestamp, server_key: &SigningKey) -> io::Result<()> {
+    /// Appends a record to the mutable partition, attested by the server, and signs a
+    /// checkpoint.
+    fn append_mutable(&mut self, payload_type: &str, key: String, content: &Value, at: Timestamp, server_key: &SigningKey) -> io::Result<()> {
         self.require_server_key(server_key)?;
-        let content = scatter_log::cbor::to_value(record).map_err(other)?;
         let comment = Value::Null;
-        let attestation = instance_attestation(server_key, self.server.as_str(), &self.authority, None, false, &content, &comment)
-            .map_err(|_| invalid("a key record does not encode"))?;
+        let attestation = instance_attestation(server_key, self.server.as_str(), &self.authority, None, false, content, &comment)
+            .map_err(|_| invalid("a record of the mutable partition does not encode"))?;
         let draft = Draft {
             appended_at: at.as_micros(),
-            payload_type: PAYLOAD_KEY.into(),
-            key: Some(actor.as_str().to_string()),
+            payload_type: payload_type.into(),
+            key: Some(key),
             revid: None,
             logid: None,
             page_id: None,
-            body: Body::core(&content, &comment, &attestation).map_err(other)?,
+            body: Body::core(content, &comment, &attestation).map_err(other)?,
         };
         block_on(self.store.append(self.mutable, draft)).map_err(other)?;
         let checkpoint = block_on(scatter_integrity::checkpoints::checkpoint(
@@ -339,41 +397,109 @@ impl ClaimLog {
         Ok(())
     }
 
+    /// Every surrogate minted, in order, each with the actor it stands for, or `None` if
+    /// its actor record was erased.
+    pub fn surrogates(&self) -> io::Result<Vec<(u64, Option<NamedNode>)>> {
+        let mut surrogates: Vec<(u64, Option<NamedNode>)> = Vec::new();
+        for record in records(&self.store, self.mutable)? {
+            if record.header().payload_type != PAYLOAD_ACTOR {
+                continue;
+            }
+            let offset = record.header().offset;
+            let bad = |what: String| invalid(format!("the mutable partition, offset {offset}: {what}"));
+            let surrogate = record.header().key.as_deref()
+                .and_then(surrogate_of_key)
+                .ok_or_else(|| bad("the actor record is not keyed by a surrogate".into()))?;
+            let actor = match record.body().content().value().map_err(|e| bad(e.to_string()))? {
+                // Erased: the number stays taken and stands for nobody
+                None => None,
+                Some(content) => {
+                    let actor: ActorRecord = scatter_log::cbor::from_value(content).map_err(|e| bad(e.to_string()))?;
+                    actor.validate(&ActorKey::surrogate(surrogate)).map_err(|e| bad(e.to_string()))?;
+                    let iri = actor.raw.as_deref().and_then(|raw| NamedNode::new(raw).ok())
+                        .ok_or_else(|| bad("the actor record does not hold an IRI".into()))?;
+                    Some(iri)
+                },
+            };
+            // A later record for a surrogate replaces the earlier one
+            match surrogates.iter_mut().find(|(n, _)| *n == surrogate) {
+                Some(entry) => entry.1 = actor,
+                None => surrogates.push((surrogate, actor)),
+            }
+        }
+        Ok(surrogates)
+    }
+
+    /// The surrogate that stands for an actor, if one has been minted for it.
+    pub fn surrogate_of(&self, actor: &NamedNode) -> io::Result<Option<u64>> {
+        Ok(self.surrogates()?.into_iter().find(|(_, of)| of.as_ref() == Some(actor)).map(|(n, _)| n))
+    }
+
+    /// The surrogate that stands for an actor, minted and recorded if it has none.
+    /// Surrogates are minted in sequence from 1 and a number is never used twice.
+    pub fn mint_surrogate(&mut self, actor: &NamedNode, server_key: &SigningKey) -> io::Result<u64> {
+        let surrogates = self.surrogates()?;
+        if let Some((n, _)) = surrogates.iter().find(|(_, of)| of.as_ref() == Some(actor)) {
+            return Ok(*n);
+        }
+        let surrogate = surrogates.iter().map(|(n, _)| *n).max().unwrap_or(0) + 1;
+        let key = ActorKey::surrogate(surrogate);
+        let record = ActorRecord::surrogate(ActorKind::Federated, actor.as_str());
+        record.validate(&key).map_err(invalid)?;
+        let content = scatter_log::cbor::to_value(&record).map_err(other)?;
+        self.append_mutable(PAYLOAD_ACTOR, key.to_string(), &content, now(), server_key)?;
+        Ok(surrogate)
+    }
+
     /// Registers a public key for an actor, valid from now. Returns its key record.
     pub fn register_key(&mut self, actor: &NamedNode, key: &VerifyingKey, server_key: &SigningKey) -> io::Result<KeyRecord> {
+        let surrogate = self.mint_surrogate(actor, server_key)?;
         let now = now();
         let record = KeyRecord::register(PublicKey(key.to_bytes()), now, None).map_err(invalid)?;
-        self.append_key_record(actor, &record, now, server_key)?;
+        let content = scatter_log::cbor::to_value(&record).map_err(other)?;
+        self.append_mutable(PAYLOAD_KEY, ActorKey::surrogate(surrogate).to_string(), &content, now, server_key)?;
         Ok(record)
     }
 
     /// Revokes every key an actor has. Returns the records that were revoked.
     pub fn revoke_keys(&mut self, actor: &NamedNode, server_key: &SigningKey) -> io::Result<Vec<KeyRecord>> {
+        let Some(surrogate) = self.surrogate_of(actor)? else {
+            return Ok(Vec::new());
+        };
         let records = self.key_records(actor)?;
         let revoked: Vec<KeyRecord> = current_keys(&records).into_iter().cloned().collect();
         for record in &revoked {
-            self.append_key_record(actor, &record.revoke(), now(), server_key)?;
+            let content = scatter_log::cbor::to_value(&record.revoke()).map_err(other)?;
+            self.append_mutable(PAYLOAD_KEY, ActorKey::surrogate(surrogate).to_string(), &content, now(), server_key)?;
         }
         Ok(revoked)
     }
 
-    /// Every key record of the mutable partition, in log order, each with its actor.
+    /// Every key record of the mutable partition, in log order, each with its actor. The
+    /// key records of a surrogate whose actor record was erased belong to nobody and are
+    /// left out.
     pub fn all_key_records(&self) -> io::Result<Vec<(NamedNode, KeyRecord)>> {
-        records(&self.store, self.mutable)?.iter()
-            .filter(|record| record.header().payload_type == PAYLOAD_KEY)
-            .map(|record| {
-                let offset = record.header().offset;
-                let bad = |what: String| invalid(format!("the mutable partition, offset {offset}: {what}"));
-                let actor = record.header().key.as_deref()
-                    .and_then(|key| NamedNode::new(key).ok())
-                    .ok_or_else(|| bad("the record's key is not an actor's IRI".into()))?;
-                let content = record.body().content().value().map_err(|e| bad(e.to_string()))?
-                    .ok_or_else(|| bad("the key record was erased".into()))?;
-                let key: KeyRecord = scatter_log::cbor::from_value(content).map_err(|e| bad(e.to_string()))?;
-                key.validate().map_err(|e| bad(e.to_string()))?;
-                Ok((actor, key))
-            })
-            .collect()
+        let surrogates = self.surrogates()?;
+        let mut keys = Vec::new();
+        for record in records(&self.store, self.mutable)? {
+            if record.header().payload_type != PAYLOAD_KEY {
+                continue;
+            }
+            let offset = record.header().offset;
+            let bad = |what: String| invalid(format!("the mutable partition, offset {offset}: {what}"));
+            let surrogate = record.header().key.as_deref()
+                .and_then(surrogate_of_key)
+                .ok_or_else(|| bad("the key record is not keyed by a surrogate".into()))?;
+            let actor = surrogates.iter().find(|(n, _)| *n == surrogate)
+                .ok_or_else(|| bad(format!("no actor record for actor:{surrogate}")))?;
+            let Some(actor) = &actor.1 else { continue };
+            let content = record.body().content().value().map_err(|e| bad(e.to_string()))?
+                .ok_or_else(|| bad("the key record was erased".into()))?;
+            let key: KeyRecord = scatter_log::cbor::from_value(content).map_err(|e| bad(e.to_string()))?;
+            key.validate().map_err(|e| bad(e.to_string()))?;
+            keys.push((actor.clone(), key));
+        }
+        Ok(keys)
     }
 
     /// The key records of one actor, in log order.
@@ -609,4 +735,100 @@ fn claim_of(record: &Record) -> Result<StoredClaim, String> {
     let signed = SignedClaim::from_parts(envelope, sequence_id, text(server.get("timestamp"), "the timestamp")?, server_signature)
         .map_err(|e| e.to_string())?;
     Ok(StoredClaim { signed, actor_key, server_key })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keys;
+
+    fn iri(s: &str) -> NamedNode {
+        NamedNode::new(s).unwrap()
+    }
+
+    fn log() -> (tempfile::TempDir, ClaimLog, SigningKey) {
+        let dir = tempfile::tempdir().unwrap();
+        let instance = Instance::new("http://example.org", iri("http://example.org/Server"), dir.path().join("store.nq").to_str().unwrap());
+        let server_key = keys::generate();
+        let log = ClaimLog::create(&instance, &server_key).unwrap();
+        (dir, log, server_key)
+    }
+
+    #[test]
+    fn actors_are_known_in_headers_by_surrogates_alone() {
+        let (_dir, mut log, server_key) = log();
+        let alice = iri("http://example.org/alice");
+        let bob = iri("http://example.org/bob");
+
+        let alice_key = keys::generate().verifying_key();
+        log.register_key(&alice, &alice_key, &server_key).unwrap();
+        log.register_key(&bob, &keys::generate().verifying_key(), &server_key).unwrap();
+        log.register_key(&alice, &keys::generate().verifying_key(), &server_key).unwrap();
+
+        // One surrogate for each actor, minted in sequence, however many keys it has
+        assert_eq!(log.surrogates().unwrap(), [(1, Some(alice.clone())), (2, Some(bob.clone()))]);
+        assert_eq!(log.surrogate_of(&alice).unwrap(), Some(1));
+        assert_eq!(log.surrogate_of(&iri("http://example.org/carol")).unwrap(), None);
+        assert_eq!(log.key_records(&alice).unwrap().len(), 2);
+        assert_eq!(log.key_records(&alice).unwrap()[0].public_key.0, alice_key.to_bytes());
+
+        // An actor record and then its key record, each keyed by the surrogate
+        let headers: Vec<(String, String)> = records(&log.store, log.mutable).unwrap().iter()
+            .map(|record| (record.header().payload_type.clone(), record.header().key.clone().unwrap()))
+            .collect();
+        assert_eq!(headers, [
+            (PAYLOAD_ACTOR.to_string(), "actor:1".to_string()),
+            (PAYLOAD_KEY.to_string(), "actor:1".to_string()),
+            (PAYLOAD_ACTOR.to_string(), "actor:2".to_string()),
+            (PAYLOAD_KEY.to_string(), "actor:2".to_string()),
+            (PAYLOAD_KEY.to_string(), "actor:1".to_string()),
+        ]);
+        for record in records(&log.store, log.mutable).unwrap() {
+            assert!(!String::from_utf8_lossy(&record.header().encode()).contains("example.org"));
+        }
+        assert_eq!(log.verify(&server_key.verifying_key()).unwrap(), 0);
+    }
+
+    #[test]
+    fn surrogates_answer_the_scatter_actors_contract() {
+        let (_dir, mut log, server_key) = log();
+        let mut surrogates = Surrogates { log: &mut log, server_key: &server_key };
+
+        assert_eq!(surrogates.lookup(ActorKind::Federated, "http://example.org/alice").unwrap(), None);
+        assert_eq!(surrogates.surrogate(ActorKind::Federated, "http://example.org/alice").unwrap(), 1);
+        assert_eq!(surrogates.surrogate(ActorKind::Federated, "http://example.org/bob").unwrap(), 2);
+        assert_eq!(surrogates.surrogate(ActorKind::Federated, "http://example.org/alice").unwrap(), 1);
+        assert_eq!(surrogates.lookup(ActorKind::Federated, "http://example.org/bob").unwrap(), Some(2));
+        assert_eq!(surrogates.raw(2).unwrap(), Some((ActorKind::Federated, "http://example.org/bob".to_string())));
+        assert_eq!(surrogates.raw(3).unwrap(), None);
+        assert!(surrogates.surrogate(ActorKind::Anonymous, "192.0.2.1").is_err());
+        assert!(surrogates.surrogate(ActorKind::Federated, "not an iri").is_err());
+    }
+
+    #[test]
+    fn an_erased_actor_record_leaves_only_the_number() {
+        let (_dir, mut log, server_key) = log();
+        let alice = iri("http://example.org/alice");
+        log.register_key(&alice, &keys::generate().verifying_key(), &server_key).unwrap();
+        log.register_key(&iri("http://example.org/bob"), &keys::generate().verifying_key(), &server_key).unwrap();
+
+        // Erase the content of Alice's actor record, at offset 0 of the partition
+        block_on(log.store.erase_parts(log.mutable, 0, &[0])).unwrap();
+
+        // The number is still taken and stands for nobody; her keys belong to nobody
+        assert_eq!(log.surrogates().unwrap()[0], (1, None));
+        assert_eq!(log.surrogate_of(&alice).unwrap(), None);
+        assert!(log.current_keys(&alice).unwrap().is_empty());
+        assert_eq!(log.all_key_records().unwrap().len(), 1);
+        for record in records(&log.store, log.mutable).unwrap() {
+            assert!(!String::from_utf8_lossy(&record.encode()).contains("example.org/alice"));
+        }
+
+        // Seen again, she gets a new surrogate, and the key registered now is hers
+        let key = keys::generate().verifying_key();
+        log.register_key(&alice, &key, &server_key).unwrap();
+        assert_eq!(log.surrogate_of(&alice).unwrap(), Some(3));
+        assert_eq!(log.current_keys(&alice).unwrap().len(), 1);
+        assert_eq!(log.current_keys(&alice).unwrap()[0].public_key.0, key.to_bytes());
+    }
 }

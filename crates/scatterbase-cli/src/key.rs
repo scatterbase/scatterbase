@@ -98,6 +98,9 @@ pub fn handle_key_add_command(args: &[String], env_path: &str) -> io::Result<()>
     println!("Key registered for attribution URI: {}", attribution.as_str());
     println!("Public key: {}", keys::public_key_iri(&verifying_key).as_str());
     println!("Key ID: {}", record.key_id);
+    if let Some(surrogate) = log.surrogate_of(&attribution)? {
+        println!("Known in the log as: actor:{}", surrogate);
+    }
 
     Ok(())
 }

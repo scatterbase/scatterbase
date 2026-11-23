@@ -165,13 +165,23 @@ The `graph:` records are the instance's **graph registry**. Each is attested by 
 
 ### The mutable partition
 
-The mutable partition holds what can be taken back, which for now is the keys actors sign with. A key is registered by a record of payload type `scatter:v0/key`, whose header key is the actor's IRI and whose content is a `scatter-actors` key record:
+The mutable partition holds what can be taken back: who the actors are and the keys they sign with. Its records are attested by the server under the founding record's authority, so only the server writes them.
+
+**Actors and surrogates.** A record's header is never erased, so it must not say who an actor is. An actor is therefore known in this partition by a **surrogate**: a number the server mints in sequence, from 1, the first time the actor is given a record, written `actor:{n}`. The one place that says which actor a surrogate stands for is its actor record, of payload type `scatter:v0/actor` and keyed `actor:{n}`, whose content is a `scatter-actors` actor record of kind `federated` holding the actor's IRI:
+
+```text
+{"kind": "federated", "status": "active", "raw": "{actor IRI}"}
+```
+
+If that record's content is erased, only the number is left. The key records under the surrogate can no longer be tied to an IRI and count for nobody, and the IRI seen again is given a new surrogate.
+
+**Keys.** A key is registered by a record of payload type `scatter:v0/key`, whose header key is the actor's surrogate and whose content is a `scatter-actors` key record:
 
 ```text
 {"key_id": text, "alg": "ed25519", "public_key": bytes(32), "valid_from": microseconds since the epoch}
 ```
 
-with `valid_until` if the key expires. A later record for the same key ID with `"revoked": true` revokes it. Each record is attested by the server under the founding record's authority, so only the server registers or revokes a key.
+with `valid_until` if the key expires. A later record for the same key ID with `"revoked": true` revokes it.
 
 ### The claim partition
 
