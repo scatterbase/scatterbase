@@ -7,7 +7,7 @@ A **claim** is the unit of provenance in Scatterbase. Triples are not stored as 
 A claim goes through two phases:
 
 1. **Envelope** (client side). The actor prepares a claim of a set of triples, acknowledges the prior use of each term, and signs. `scatterbase claim prepare` writes an envelope.
-2. **Signed claim** (server side). The server verifies the actor's signature against the actor's registered key, assigns a sequence ID and a timestamp, signs, and appends the result to the claim log. `scatterbase claim submit` does this; `scatterbase claim write` does both phases in one step and stores exactly the same triples.
+2. **Signed claim** (server side). The server verifies the actor's signature against the actor's registered key, assigns a sequence ID and a timestamp, signs, and appends the result to the claim partition of the log. `scatterbase claim submit` does this; `scatterbase claim write` does both phases in one step and stores exactly the same triples.
 
 ## Hashes
 
@@ -80,7 +80,7 @@ scatter-claim-acceptance-v0
 {timestamp}
 ```
 
-The sequence ID is the claim's offset in the claim log, written in decimal: the first claim an instance accepts has sequence ID `0`, and there are no gaps. The timestamp is the acceptance time in RFC 3339 with milliseconds, in UTC.
+The sequence ID is the claim's offset in the claim partition of the log, written in decimal: the first claim an instance accepts has sequence ID `0`, and there are no gaps. The timestamp is the acceptance time in RFC 3339 with milliseconds, in UTC.
 
 ## Keys
 
@@ -93,7 +93,7 @@ A public key is named by `urn:ed25519:{key}`, the 32 bytes in z-base-32. An acto
 <urn:ed25519:{key}> scatter:owner <{actor}> .
 ```
 
-The actor's key is the one registered by the latest such claim. The server refuses a claim whose signature does not verify against its actor's registered key, and a claim by an actor with no registered key. The one exception is the first claim of an empty log, which may register its own actor's key and is checked against that key: this is how a server's key is registered by `scatterbase init`. `scatterbase key add` registers every other actor's key in a claim by the server.
+The actor's key is the one registered by the latest such claim. The server refuses a claim whose signature does not verify against its actor's key, and a claim by an actor with no registered key. The server's own key is not registered this way: it is the key of the founding record of the log's server partition, and a claim by the server is checked against that. `scatterbase init` also claims the server's registration, so that the key is in the store as RDF like every other, but it is the founding record that establishes it. `scatterbase key add` registers every other actor's key in a claim by the server.
 
 Each actor has its own key. The server's private key is in the file the configuration names; `key add` writes an actor's new key to `actors/{hash}.ed25519.private` beside it, where `{hash}` is the SHA-256 of the actor's IRI in z-base-32.
 
@@ -139,9 +139,24 @@ In Turtle the envelope is written one triple per line: the claim's triples in or
 
 **Reading an envelope back.** Only the triples about the claim are needed, which in the store are the `meta` graph. The claim's triples are taken from the reification of every `scatter_triple:{T}` claimed in `C`, each checked against its triple hash; the claim ID is then recomputed and must equal `C`. A set of triples that reads back is therefore the envelope that was written, and the signatures can be checked against it.
 
-## The claim log
+## The log
 
-Accepted claims are kept in an append-only log, which is the instance's source of truth. The log is a `scatter-log` file store with one partition, `claim`, that keeps every record. After each append the server signs a checkpoint of the partition's Merkle tree head under the origin `{host}/log/claim`, so a copy of the log can be shown to be complete and in order. `scatterbase log verify` checks the checkpoint, every record and every signature.
+Everything an instance accepts is kept in an append-only log, which is its source of truth. The log is a `scatter-log` file store with two partitions. Each keeps every record, and after each append the server signs a checkpoint of the partition's Merkle tree head, under the origin `{host}/log/{name}`, so a copy of the log can be shown to be complete and in order. `scatterbase log verify` checks the key chain, the checkpoints, every record and every signature.
+
+### The server partition
+
+Partition 0 founds and describes the instance. It holds `scatter:v0/config` records, as a `config` partition does in Triplespace, and `scatterbase init` writes the first of them:
+
+| Offset | Key | Content |
+|---|---|---|
+| 0 | `key:{key ID}` | The server's public key. This is the instance's **founding record**: it is signed by the key it registers, and everything else in the log is checked against that key. |
+| 1 | `graph:server` | The server partition itself: partition 0 and its policies |
+| 2 | `graph:claim` | The claim partition: its ID, 64 random bits, and its policies |
+| 3 | `graph:meta` | The `meta` graph, a projection |
+
+The `graph:` records are the instance's **graph registry**. Each is attested by the server under the founding record's authority. The claim partition is the one the `graph:claim` record names. The `key:` records form a chain, in which a later key must be signed by the one before it, and the server's key is the last of the chain.
+
+### The claim partition
 
 A claim is one record of payload type `scatter:v0/claim`. Its header key is the claim ID in z-base-32, its `appended_at` is the acceptance time, and its offset is the claim's sequence ID. Its body has five parts, each salted and erasable on its own:
 
@@ -160,7 +175,7 @@ The storage file is derived from the log: it is a `scatter-quadstore` N-Quads fi
 | Graph | Holds |
 |---|---|
 | `claim` | The triples of every claim by an actor other than the server |
-| `server` | The triples of every claim by the server: registered keys and the domain |
+| `server` | The triples of every claim by the server: registered keys and the domain. (The records of the server *partition* are configuration and are not projected into it.) |
 | `meta` | Everything recorded about each claim: its reification, attribution, chain, acknowledgments, signatures, sequence ID, time and type |
 | the default graph | Triples written outside any claim, by `scatterbase triple write` and `scatterbase domain init` |
 

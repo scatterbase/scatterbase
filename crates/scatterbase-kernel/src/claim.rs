@@ -17,13 +17,12 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 
 use chrono::{SecondsFormat, Utc};
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::SigningKey;
 use oxrdf::{NamedNode, NamedOrBlankNode, Term, Triple};
 use oxttl::{NTriplesParser, TurtleParser};
 use scatter_claims::{Acknowledgments, Claim, ClaimError, Envelope, SignedClaim};
 
 use crate::instance::Instance;
-use crate::keys::public_key_from_iri;
 use crate::log::ClaimLog;
 use crate::lookup::Snapshot;
 use crate::prefix::expand_prefix;
@@ -116,31 +115,33 @@ pub fn prepare(
 
 /// Accepts an envelope and returns the signed claim.
 ///
-/// The envelope's signature must verify against the key its actor has registered, and the
-/// envelope must have been prepared against the store as it is now ([`check_current`]). An
-/// actor with no registered key is refused, with one exception: the first claim of an empty
-/// log may register its own actor's key and is checked against that key, which is how a
-/// server's key comes to be registered.
+/// The envelope's signature must verify against its actor's key, and the envelope must have
+/// been prepared against the store as it is now ([`check_current`]). The server's key is
+/// the current key of the log's server partition. Any other actor's is the key the server
+/// registered for it, and an actor with no registered key is refused.
 ///
-/// An accepted claim is appended to the claim log, where its offset is its sequence ID,
-/// and the store is brought up to the log.
+/// An accepted claim is appended to the claim partition of the log, where its offset is its
+/// sequence ID, and the store is brought up to the log.
 pub fn submit(envelope: Envelope, instance: &Instance, server_key: &SigningKey) -> io::Result<SignedClaim> {
-    let mut log = ClaimLog::open(&instance.log_dir, &instance.domain)?;
+    let mut log = ClaimLog::open(instance)?;
     projection::catch_up(instance, &log)?;
     let store = Snapshot::load(instance)?;
     let claim = envelope.claim();
     let attribution = claim.attribution();
     let offset = log.size()?;
 
-    let key = match store.public_key(attribution.as_ref()) {
-        Some(key) => key,
-        None => founding_key(offset, claim).ok_or_else(|| io::Error::new(
+    // The server's key is the one its partition of the log registers; any other actor's is
+    // the one the server registered for it in a claim
+    let key = if *attribution == instance.server {
+        log.server_key()
+    } else {
+        store.public_key(attribution.as_ref()).ok_or_else(|| io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
                 "No public key found for attribution URI {attribution}. Register one first using: scatterbase key add --attribution {}",
                 attribution.as_str(),
             ),
-        ))?,
+        ))?
     };
     envelope.verify(&key).map_err(|e| io::Error::new(
         io::ErrorKind::InvalidData,
@@ -194,20 +195,6 @@ pub fn check_current(envelope: &Envelope, store: &Snapshot) -> Result<(), String
     Ok(())
 }
 
-/// The key the first claim of an empty log registers for its own actor, if it does.
-fn founding_key(offset: u64, claim: &Claim) -> Option<VerifyingKey> {
-    if offset != 0 {
-        return None;
-    }
-    let actor = NamedOrBlankNode::from(claim.attribution().clone());
-    claim.triples().iter()
-        .filter(|t| t.subject == actor && t.predicate.as_ref() == scatter_vocab::scatter::HAS_PUBLIC_KEY)
-        .find_map(|t| match &t.object {
-            Term::NamedNode(key_iri) => public_key_from_iri(key_iri.as_ref()),
-            _ => None,
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +226,7 @@ mod tests {
             let instance = Instance::new(DOMAIN, server.clone(), dir.path().join("store.nt").to_str().unwrap());
             let server_key = keys::generate();
             let fixture = Self { _dir: dir, instance, server, server_key };
+            ClaimLog::create(&fixture.instance, &fixture.server_key).unwrap();
             fixture.claim(keys::registration(&fixture.server, &fixture.server_key.verifying_key()), &fixture.server, &fixture.server_key).unwrap();
             fixture
         }
@@ -248,7 +236,7 @@ mod tests {
         }
 
         fn log(&self) -> ClaimLog {
-            ClaimLog::open(&self.instance.log_dir, DOMAIN).unwrap()
+            ClaimLog::open(&self.instance).unwrap()
         }
 
         fn prepare(&self, triples: Vec<Triple>, actor: &NamedNode, key: &SigningKey) -> Envelope {
@@ -345,9 +333,33 @@ mod tests {
         let error = fixture.claim(vec![name("http://example.org/a", "A")], &mallory, &key).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
 
-        // Registering one's own key works only for the first claim of an empty store
+        // Nobody but the server registers a key, not even for themselves
         let error = fixture.claim(keys::registration(&mallory, &key.verifying_key()), &mallory, &key).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn the_servers_key_is_the_one_its_partition_registers() {
+        let fixture = Fixture::new();
+        let impostor = keys::generate();
+
+        // A claim as the server signed with another key is refused, even one that claims
+        // to register that key for the server
+        let error = fixture.claim(keys::registration(&fixture.server, &impostor.verifying_key()), &fixture.server, &impostor).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        // And a server holding another key cannot accept into this log
+        let envelope = fixture.prepare(vec![name("http://example.org/a", "A")], &fixture.server, &fixture.server_key);
+        let error = submit(envelope, &fixture.instance, &impostor).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+
+        let log = fixture.log();
+        assert_eq!(log.server_key(), fixture.server_key.verifying_key());
+        let graphs = log.graphs().unwrap();
+        assert_eq!(graphs.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["server", "claim", "meta"]);
+        assert_eq!(graphs[0].1, Some(crate::log::SERVER_PARTITION));
+        assert!(graphs[1].1.is_some_and(|partition| partition != crate::log::SERVER_PARTITION));
+        assert_eq!(graphs[2].1, None);
+        assert!(ClaimLog::create(&fixture.instance, &fixture.server_key).is_err());
     }
 
     #[test]

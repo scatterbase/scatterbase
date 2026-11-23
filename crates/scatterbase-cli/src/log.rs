@@ -7,13 +7,19 @@ use scatterbase_kernel::projection;
 
 use crate::config::Config;
 
-/// Handles the "log verify" command: checks the claim log against the server's key.
+/// Handles the "log verify" command: checks the log against the server's key.
 pub fn handle_log_verify_command(env_path: &str) -> io::Result<()> {
     let config = Config::load(env_path).map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
     let instance = config.instance();
-    let log = ClaimLog::open(&instance.log_dir, &instance.domain)?;
+    let log = ClaimLog::open(&instance)?;
     let size = log.verify(&config.server_key()?.verifying_key())?;
-    println!("Claim log verified: {} claims under the checkpoint of {}", size, log.origin());
+    println!("Log verified: {} claims under the checkpoint of {}", size, log.origin());
+    for (name, partition) in log.graphs()? {
+        match partition {
+            Some(partition) => println!("  graph {}: partition {:016x}", name, partition),
+            None => println!("  graph {}: projection", name),
+        }
+    }
     Ok(())
 }
 
@@ -21,7 +27,7 @@ pub fn handle_log_verify_command(env_path: &str) -> io::Result<()> {
 pub fn handle_log_rebuild_command(env_path: &str) -> io::Result<()> {
     let config = Config::load(env_path).map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
     let instance = config.instance();
-    let log = ClaimLog::open(&instance.log_dir, &instance.domain)?;
+    let log = ClaimLog::open(&instance)?;
     let size = projection::rebuild(&instance, &log)?;
     println!("Rebuilt {} from {} claims", instance.storage_file, size);
     Ok(())
@@ -33,11 +39,12 @@ pub fn print_log_help() {
         "log",
         "scatterbase log <command> [options]",
         Some(vec![
-            ("verify", "Check the claim log: its signed checkpoint, every record and every signature"),
+            ("verify", "Check the log: the server's key chain, the signed checkpoints, every record and every signature"),
             ("rebuild", "Write the storage file again from the claim log"),
         ]),
         Some(vec![
-            "The claim log holds every accepted claim and is what the storage file is derived from.",
+            "The log holds the server's key and graph registry in its server partition and every",
+            "accepted claim in its claim partition. The storage file is derived from the claims.",
             "Triples written with 'triple write' or 'domain init' are not claims, so they are not",
             "in the log and a rebuild does not bring them back."
         ]),

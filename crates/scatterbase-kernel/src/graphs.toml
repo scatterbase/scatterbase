@@ -1,0 +1,38 @@
+# The graphs of a Scatterbase instance, in the form of scatter-log's graph registry.
+#
+# A source graph is a partition of the instance's log; a projection is derived from the
+# sources. An instance registers each of them in its server partition when it is created,
+# as a `graph:{name}` record, and the IRI of a graph is {domain}/graph/{name}.
+#
+# The server partition is partition 0, as triplespace's `config` partition is: the registry
+# format lets only a row named `config` state that, so it is not written here.
+
+version = 1
+
+[[graph]]
+name = "server"
+kind = "source"
+scope = "instance"
+history = "full"
+integrity = "logged"
+export = "public"
+payload_types = ["scatter:v0/config"]
+defined_in = "docs/claim-envelopes.md, The log"
+
+[[graph]]
+name = "claim"
+kind = "source"
+scope = "instance"
+history = "full"
+integrity = "logged"
+export = "public"
+payload_types = ["scatter:v0/claim"]
+defined_in = "docs/claim-envelopes.md, The log"
+
+[[graph]]
+name = "meta"
+kind = "projection"
+scope = "instance"
+export = "public"
+description = "What the envelope and the server record about each claim, derived from the claim partition"
+defined_in = "docs/claim-envelopes.md, The store and its graphs"

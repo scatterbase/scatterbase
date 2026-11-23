@@ -8,6 +8,7 @@ use oxrdf::{NamedNode, Triple};
 use crate::claim::{prepare, submit};
 use crate::instance::Instance;
 use crate::keys;
+use crate::log::ClaimLog;
 use crate::lookup::Snapshot;
 use scatter_vocab::{rdf, schema, scatter};
 
@@ -23,13 +24,15 @@ fn is_sandbox(domain: &NamedNode) -> bool {
     host.split(['/', ':', '?', '#']).next().is_some_and(|host| host.ends_with(".sandbox"))
 }
 
-/// Writes the first two claims of an instance into its empty log, both by the server:
+/// Founds an instance: creates its log ([`ClaimLog::create`]) and writes its first two
+/// claims, both by the server:
 ///
-/// 1. the registration of the server's own key, which is checked against the key it
-///    registers ([`submit`]);
+/// 1. the registration of the server's key, which says in RDF what the founding record of
+///    the log's server partition establishes;
 /// 2. the declaration of the domain as a `schema:Dataset` and, if it is a sandbox domain,
 ///    a `scatter:SandboxDomain`.
 pub fn create_initial_claims(instance: &Instance, server_key: &SigningKey) -> io::Result<()> {
+    ClaimLog::create(instance, server_key)?;
     let invalid = |e| io::Error::new(io::ErrorKind::InvalidData, e);
     let (domain, server) = (instance.domain.as_str(), &instance.server);
     let store = || Snapshot::load(instance);

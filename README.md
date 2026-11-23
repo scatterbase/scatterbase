@@ -84,9 +84,9 @@ scatterbase key add --attribution https://example.org/alice
 This generates a new Ed25519 key for the actor, keeps it beside the server's key, and registers its public key in a claim by the server. `claim prepare` and `claim write` then sign that actor's claims with it. Use `--file <keyfile>` to register a key you already hold, and `--private-key <keyfile>` when preparing a claim with it. `claim submit` verifies every claim's signature against the actor's registered key.
 
 #### Claim Log
-Every accepted claim is a record of an append-only log under `data/log`, with a checkpoint signed by the server after each one. The storage file is derived from it.
+The log under `data/log` has two partitions. The server partition holds the server's key, as a self-signed founding record, and the registry of the instance's graphs. The claim partition holds every accepted claim, with a checkpoint signed by the server after each one. The storage file is derived from the claims.
 
-- **Verify the log**: check the signed checkpoint, every record and every signature.
+- **Verify the log**: check the server's key chain, the signed checkpoints, every record and every signature.
   ```bash
   scatterbase log verify
   ```
